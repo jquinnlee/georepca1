@@ -37,6 +37,9 @@ from sklearn.utils import check_random_state, check_array, check_symmetric
 from sklearn.isotonic import IsotonicRegression
 from sklearn.utils.validation import _deprecate_positional_args
 from joblib import Parallel, delayed, effective_n_jobs
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.linear_model import LinearRegression
+from sklearn.naive_bayes import CategoricalNB
 
 
 def load_dat(animal, p, to_convert=["envs", "position", "trace"], format="MATLAB"):
@@ -395,6 +398,457 @@ def get_rsm_similarity_animals_sequences(animals, p, nsims=100, s_prop=0.9):
     df_map_corr_animals_sequences = df_map_corr_animals_sequences[df_map_corr_animals_sequences["Animal A"] !=
                                                                   df_map_corr_animals_sequences["Animal B"]]
     return df_map_corr_animals_sequences
+
+
+def get_cell_rsm_partitioned(maps, down_sample_mask=None, d_thresh=0):
+    # first load in either smoothed or unsmoothed rate maps depending on input arg
+    # when loading in transpose the maps such that the cell and day axes come first
+    maps = deepcopy(maps['smoothed']).transpose((2, 3, 0, 1))
+    # then use a down-sampling mask to nan out cells if down_sample_mask is
+    # provided with a masking (ncells, ndays)
+    if np.any(down_sample_mask):
+        maps[~down_sample_mask] = np.nan
+    # transpose the rate maps back to their original order (xdim, ydim, ncell, ndays)
+    maps = maps.transpose((2, 3, 0, 1))
+    n_days = maps.shape[-1]
+
+    # build partition masks for 3x3 grid comparisons (5 x 5 partitions of the 15 x 15 space)
+    parts_idx = ((0, 5), (5, 10), (10, 15))
+    n_parts = len(parts_idx) ** 2
+    parts_mask = np.zeros((len(parts_idx)**2, maps.shape[0], maps.shape[1])).astype(bool)
+    count = 0
+    for x1, x2 in parts_idx:
+        for y1, y2 in parts_idx:
+            parts_mask[count, x1:x2, y1:y2] = True
+            count += 1
+
+    # flatten the rate maps create a mask to avoid correlating nans
+    flat_maps = maps.reshape(maps.shape[0] * maps.shape[1], maps.shape[2], maps.shape[3])
+    nan_idx = np.isnan(flat_maps)
+    reg_idx = np.any(~nan_idx, axis=0)
+    # cell_idx will show which cells were included that pass the number of days threshold (d_thresh)
+    cell_idx = np.where(reg_idx.sum(axis=1) >= d_thresh)[0]
+
+    # initialize cell-wise, partition-wise rsm
+    cell_rsm = np.zeros([n_days, n_parts, n_days, n_parts, cell_idx.shape[0]])
+    for c, cell in tqdm(enumerate(cell_idx), leave=True, position=0,
+                        desc='Correlating partitions of rate maps across days and cell pairs'):
+        for s1 in range(n_days):
+            for s2 in range(n_days):
+                for p1_idx, p1_mask in enumerate(parts_mask):
+                    for p2_idx, p2_mask in enumerate(parts_mask):
+                        p1_map, p2_map = maps[:, :, cell, s1][p1_mask], maps[:, :, cell, s2][p2_mask]
+                        if np.logical_and(np.where(~np.isnan(p1_map))[0].shape[0] >= 5,
+                                          np.where(~np.isnan(p2_map))[0].shape[0] >= 5):
+                            nan_mask = ~np.isnan(np.vstack((p1_map, p2_map)).sum(axis=0))
+                            if nan_mask.astype(int).sum() > 1:
+                                cell_rsm[s1, p1_idx, s2, p2_idx, c] = pearsonr(p1_map[nan_mask],
+                                                                               p2_map[nan_mask])[0]
+                        else:
+                            cell_rsm[s1, p1_idx, s2, p2_idx, c] = np.nan
+
+    # reshape cell_rsm to be n days x n parts x n_cells
+    cell_rsm = cell_rsm.reshape(n_parts * n_days, n_parts * n_days, -1)
+    # labels will have number labels for day and partition along each axis
+    labels = np.zeros([n_days * n_parts, 2])
+    c = 0
+    for s in range(n_days):
+        for p in range(n_parts):
+            labels[c, :] = np.array([s, p])
+            c += 1
+
+    return cell_rsm, labels, cell_idx
+
+
+def get_rsm_partitioned_sequences(animals, p, file_ext='rsm_partitioned'):
+    '''
+    get_rsm_partitioned_sequences builds partitioned rsm (averaged over cells) by sequence for animals and store in dict
+    '''
+    os.chdir(p)
+    rsm_animals = {}
+    for animal in animals:
+        print(animal)
+        # load the cell- and partion-wise RSM previously calculated for each animal
+        rsm_dict = joblib.load(os.path.join(p, "results", f'{animal}_{file_ext}'))
+        rsm_animals[animal] = {'cell_idx': rsm_dict['cell_idx'], 'rsm': None}
+        # if agg (aggregate) then average across cell axis (last) if not already using agg (PV corr) rsm
+        rsm_average = rsm_dict['RSM']
+        # get number of days, partitions, shapes, and sequences
+        n_days = rsm_dict['envs'].shape[0]
+        n_parts = rsm_average.shape[0] // n_days
+        n_shapes = np.unique(rsm_dict['envs']).shape[0]
+        n_seq = n_days // n_shapes
+        n_cells = rsm_average.shape[-1]
+        # if first animal get 'cannon' labels for sorting other animals partitioned sequences
+        if animal == animals[0]:
+            rsm_animals['cannon_labels'] = np.vstack((np.tile(rsm_dict['envs'][np.newaxis].T, n_parts).ravel(),
+                                                      rsm_dict['p_labels'])).T
+        # target labels are those for actual animal under consideration
+        target_labels = np.vstack((np.tile(rsm_dict['envs'][np.newaxis].T, n_parts).ravel(),
+                                   rsm_dict['p_labels'])).T
+        # get start and stop idx for deformed shapes (since squares will stay in place)
+        def_idx = (n_parts, n_shapes * n_parts)
+        # create sorting index for target rsm relative to cannon that can be applied to each sequence separately
+        sort_idx = np.array([np.where(np.all(rsm_animals['cannon_labels'][e] == target_labels[def_idx[0]:def_idx[1]],
+                                             axis=1))[0]
+                             for e in range(def_idx[0], def_idx[1])]).ravel() + n_parts
+        # concatenate on square indices now that deformed shapes are given indices
+        sort_idx = np.hstack((np.arange(0, n_parts), sort_idx, np.arange(n_shapes * n_parts, (n_shapes + 1) * n_parts)))
+        # sorted rsm will be number of partitions in each sequence (square to square) ** 2 by the number of sequences
+        rsm_animals[animal]['rsm'] = np.zeros([n_seq, (n_shapes + 1) * n_parts, (n_shapes + 1) * n_parts, n_cells])\
+                                     * np.nan
+        square_idx = np.where(rsm_dict['envs'] == 'square')[0] * n_parts
+        for i in range(square_idx[:-1].shape[0]):
+            j, k = square_idx[i:i+2]
+            k += n_parts
+            rsm_animals[animal]['rsm'][i, :, :] = rsm_average[j:k, j:k][sort_idx, :][:, sort_idx]
+
+    rsm_animals['cannon_labels'] = rsm_animals['cannon_labels'][:n_parts * 11]
+    return rsm_animals
+
+
+def calculate_sequence_similarity(rsm_parts_ordered, method='Tau'):
+    # First calculate similarity of each animal to itself across sequences
+    n_seq, n_animals, n_shuffles, n_deviations = rsm_parts_ordered.shape[0], rsm_parts_ordered.shape[1], 10000, 100
+    sequence_similarity = {'R': np.zeros([n_seq, n_seq, n_animals]) * np.nan,
+                           'p': np.zeros([n_seq, n_seq, n_animals]) * np.nan,
+                           'SE': np.zeros([n_seq, n_seq, n_animals])}
+    for s1 in tqdm(range(n_seq)):
+        for s2 in range(n_seq):
+            for a in range(n_animals):
+                if np.any(~np.isnan(rsm_parts_ordered[s1, a, :, :])) and np.any(~np.isnan(rsm_parts_ordered[s2, a, :, :])):
+                    # grab target rsms for comparison
+                    rsm1, rsm2 = rsm_parts_ordered[s1, a, :, :], rsm_parts_ordered[s2, a, :, :]
+                    # take lower triangle of each
+                    rsm1, rsm2 = rsm1[np.tri(rsm1.shape[0], k=-1).astype(bool)], rsm2[np.tri(rsm2.shape[0], k=-1).astype(bool)]
+                    # generate mask to remove nans
+                    nan_mask = ~np.isnan(rsm1 + rsm2)
+                    # remove nans
+                    rsm1, rsm2 = rsm1[nan_mask], rsm2[nan_mask]
+                    # calculate actual pearson correlation
+                    if method == 'Tau':
+                        true_corr = kendalltau(rsm1, rsm2)[0]
+                    else:
+                        true_corr = pearsonr(rsm1, rsm2)[0]
+                    sequence_similarity['R'][s1, s2, a] = true_corr
+                    # calculate standard error for each comparison using bootstrap procedure
+                    for i in range(n_deviations):
+                        # create idx for random draws with replacement from rsms
+                        choice_idx = np.sort(np.random.choice(np.arange(rsm1.shape[0]), size=int(rsm1.shape[0]),
+                                                              replace=True))
+                        # calculate deviation from true correlation
+                        if method == 'Tau':
+                            sequence_similarity['SE'][s1, s2, a] += (true_corr -
+                                                                     kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
+                        else:
+                            sequence_similarity['SE'][s1, s2, a] += (true_corr -
+                                                                     pearsonr(rsm1[choice_idx], rsm2[choice_idx])[
+                                                                         0]) ** 2
+
+                    # compute SE from deviations
+                    sequence_similarity['SE'][s1, s2, a] = np.sqrt(sequence_similarity['SE'][s1, s2, a] /
+                                                                   (n_deviations - 1))
+                    # calculate shuffled correlations to estimate p value
+                    shuffle_corr = np.zeros(n_shuffles) * np.nan
+                    for i in range(n_shuffles):
+                        shuffle_idx = np.random.permutation(rsm2.shape[0])
+                        if method == 'Tau':
+                            shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
+                        else:
+                            shuffle_corr[i] = pearsonr(rsm1, rsm2[shuffle_idx])[0]
+                    sequence_similarity['p'][s1, s2, a] = (n_shuffles - (true_corr > shuffle_corr).sum())/n_shuffles
+    return sequence_similarity
+
+
+def calculate_animal_similarity(rsm_parts_ordered, method='Tau'):
+    n_seq, n_animals, n_shuffles, n_deviations = (rsm_parts_ordered.shape[0], rsm_parts_ordered.shape[1], 10000, 100)
+    animal_similarity = {'R': np.zeros([n_animals, n_animals, n_seq]) * np.nan,
+                         'p': np.zeros([n_animals, n_animals, n_seq]) * np.nan,
+                         'SE': np.zeros([n_animals, n_animals, n_seq])}
+    for s in range(n_seq):
+        for a1 in tqdm(range(n_animals)):
+            for a2 in range(n_animals):
+                if np.any(~np.isnan(rsm_parts_ordered[s, a1, :, :])) and np.any(~np.isnan(rsm_parts_ordered[s, a2, :, :])):
+                    # grab target rsms for comparison
+                    rsm1, rsm2 = rsm_parts_ordered[s, a1, :, :], rsm_parts_ordered[s, a2, :, :]
+                    # take lower triangle of each
+                    rsm1, rsm2 = rsm1[np.tri(rsm1.shape[0], k=-1).astype(bool)], rsm2[np.tri(rsm2.shape[0], k=-1).astype(bool)]
+                    # generate mask to remove nans
+                    nan_mask = ~np.isnan(rsm1 + rsm2)
+                    # remove nans
+                    rsm1, rsm2 = rsm1[nan_mask], rsm2[nan_mask]
+                    # calculate actual pearson correlation
+                    if method == 'Tau':
+                        true_corr = kendalltau(rsm1, rsm2)[0]
+                    else:
+                        true_corr = pearsonr(rsm1, rsm2)[0]
+                    animal_similarity['R'][a1, a2, s] = true_corr
+                    # calculate standard error for each comparison using bootstrap procedure
+                    for i in range(n_deviations):
+                        # create idx for random draws with replacement from rsms
+                        choice_idx = np.sort(np.random.choice(np.arange(rsm1.shape[0]), size=int(rsm1.shape[0]),
+                                                              replace=True))
+                        # calculate deviation from true correlation
+                        if method == 'Tau':
+                            animal_similarity['SE'][a1, a2, s] += (true_corr -
+                                                                   kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
+                        else:
+                            animal_similarity['SE'][a1, a2, s] += (true_corr -
+                                                                   pearsonr(rsm1[choice_idx], rsm2[choice_idx])[
+                                                                       0]) ** 2
+
+                    # compute SE from deviations
+                    animal_similarity['SE'][a1, a2, s] = np.sqrt(animal_similarity['SE'][a1, a2, s] /
+                                                                 (n_deviations - 1))
+                    # calculate shuffled correlations to estimate p value
+                    shuffle_corr = np.zeros(n_shuffles) * np.nan
+                    for i in range(n_shuffles):
+                        shuffle_idx = np.random.permutation(rsm2.shape[0])
+                        if method == 'Tau':
+                            shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
+                        else:
+                            shuffle_corr[i] = pearsonr(rsm1, rsm2[shuffle_idx])[0]
+                    animal_similarity['p'][a1, a2, s] = (n_shuffles - (true_corr > shuffle_corr).sum())/n_shuffles
+
+        np.fill_diagonal(animal_similarity['R'][:, :, s], np.nan)
+    return animal_similarity
+
+
+def get_rsm_partitioned_similarity(rsm_parts_animals, animals, get_sequence_similarity=True, get_animal_similarity=True,
+                                   subsample=False, n_cells=100, n_reps=100, method='Tau'):
+    '''
+    get_rsm_similarities will calculate the similarity of partition-wise rsms within animals across
+    seqs and across animals within the same seqs
+    '''
+    if not subsample:
+        # animals = list(rsm_parts_animals.keys())[1:] # drop cannon labels
+        # collect all rsms into each sequences, ordered by animal
+        rsm_parts_ordered = np.nan * np.zeros([rsm_parts_animals[animals[0]]['rsm'].shape[0], len(animals),
+                                               rsm_parts_animals[animals[0]]['rsm'].shape[1],
+                                               rsm_parts_animals[animals[0]]['rsm'].shape[2]])
+        for a, animal in enumerate(animals):
+            n_seq = rsm_parts_animals[animal]['rsm'].shape[0]
+            for s in range(n_seq):
+                rsm_parts_ordered[s, a] = np.nanmean(rsm_parts_animals[animal]['rsm'][s], -1)
+        rsm_parts_averaged = np.nanmean(np.nanmean(rsm_parts_ordered, 0), 0)
+        if get_sequence_similarity:
+            sequence_similarity = calculate_sequence_similarity(rsm_parts_ordered, method)
+        if get_animal_similarity:
+            animal_similarity = calculate_animal_similarity(rsm_parts_ordered, method)
+        if get_sequence_similarity and get_animal_similarity:
+            return sequence_similarity, animal_similarity, rsm_parts_ordered, rsm_parts_averaged
+        else:
+            return rsm_parts_ordered, rsm_parts_averaged
+    else:
+        rsm_parts_ordered = np.nan * np.zeros([n_reps, rsm_parts_animals[animals[0]]['rsm'].shape[0], len(animals),
+                                               rsm_parts_animals[animals[0]]['rsm'].shape[1],
+                                               rsm_parts_animals[animals[0]]['rsm'].shape[2]])
+        for r in range(n_reps):
+            for a, animal in enumerate(animals):
+                sub_idx = np.random.choice(np.arange(rsm_parts_animals[animal]['rsm'][0].shape[-1]),
+                                           size=n_cells,
+                                           replace=True)
+                n_seq = rsm_parts_animals[animal]['rsm'].shape[0]
+                for s in range(n_seq):
+
+                    rsm_parts_ordered[r, s, a] = np.nanmean(rsm_parts_animals[animal]['rsm'][s][:, :, sub_idx], -1)
+        # rsm_parts_ordered = np.nanmean(rsm_parts_ordered, 0)
+        rsm_parts_averaged = np.nanmean(np.nanmean(rsm_parts_ordered, 1), 1)
+        return rsm_parts_ordered, rsm_parts_averaged
+
+
+def predict_rsm_animals(animals, rsm_parts_animals):
+    rsm_parts_ordered, rsm_parts_averaged = get_rsm_partitioned_similarity(rsm_parts_animals, animals,
+                                                                           False, False)
+    if rsm_parts_animals[animals[0]]['rsm'].shape[-1] > rsm_parts_animals[animals[0]]['rsm'].shape[-2]:
+        for animal in animals:
+            rsm_parts_animals[animal]['rsm'] = np.nanmean(rsm_parts_animals[animal]['rsm'], axis=-1)
+    cols = ["Animal 1", "Animal 2", "Sequence", "Fit", "Data"]
+    df_animal_similarity = pd.DataFrame(data=np.zeros([2* np.prod(rsm_parts_ordered.shape[0] * rsm_parts_ordered.shape[1] **2),
+                                                       len(cols)]) * np.nan, columns=cols)
+    c = 0
+    for s in range(rsm_parts_ordered.shape[0]):
+        for a1 in range(rsm_parts_ordered.shape[1]):
+            for a2 in range(rsm_parts_ordered.shape[1]):
+                if a1 != a2:
+                    rsm1, rsm2, rsm_shuff1, rsm_shuff2 = \
+                        deepcopy(rsm_parts_ordered[s, a1]), deepcopy(rsm_parts_ordered[s, a2]), \
+                            deepcopy(rsm_parts_ordered[s, a1]), \
+                            deepcopy(rsm_parts_ordered[s, a2])
+
+                    if np.any(~np.isnan(rsm1)) and np.any(~np.isnan(rsm2)):
+                        nan_mask = ~np.isnan(rsm1[np.eye(rsm1.shape[0]).astype(bool)] +
+                                             rsm2[np.eye(rsm2.shape[0]).astype(bool)])
+                        rsm1, rsm2, rsm_shuff1, rsm_shuff2 = rsm1[nan_mask, :][:, nan_mask], rsm2[nan_mask, :][:, nan_mask],\
+                                     rsm_shuff1[nan_mask, :][:, nan_mask], rsm_shuff2[nan_mask, :][:, nan_mask]
+                        rsm1, rsm2, rsm_shuff1, rsm_shuff2 =\
+                            rsm1[np.tri(rsm1.shape[0], k=-1).astype(bool)],\
+                            rsm2[np.tri(rsm2.shape[0], k=-1).astype(bool)],\
+                            rsm_shuff1[np.tri(rsm_shuff1.shape[0], k=-1).astype(bool)],\
+                            rsm_shuff2[np.tri(rsm_shuff2.shape[0], k=-1).astype(bool)]
+
+                        df_animal_similarity.iloc[c] = np.hstack((a1, a2, s, kendalltau(rsm1, rsm2)[0], 0))
+                        c += 1
+                        df_animal_similarity.iloc[c] = np.hstack((a1, a2, s,
+                                                                  kendalltau(np.random.permutation(rsm_shuff1),
+                                                                             np.random.permutation(rsm_shuff2))[0],
+                                                                  1))
+                        c += 1
+    df_animal_similarity['Data'][df_animal_similarity['Data'] == 0] = "Actual"
+    df_animal_similarity['Data'][df_animal_similarity['Data'] == 1] = "Shuffle"
+    df_animal_similarity.dropna(axis=0, inplace=True)
+
+    cols = ["Animal", "Sequence", "Correct", "Data"]
+    df_animal_ID = pd.DataFrame(data=np.zeros([2*(np.prod(rsm_parts_ordered.shape[:2]) -1), len(cols)]), columns = cols)
+    # fit linear model from rsms to predict animal ID in each sequence
+    # for each sequence, fit linear model on remaining sequences
+    # then predict animal on left out sequence
+    c = 0
+    for a1, animal1 in enumerate(animals):
+        # calculate number of sequences for each animal that we are trying to predict
+        n_seq = rsm_parts_animals[animal1]['rsm'].shape[0]
+        for s1 in range(n_seq):
+            X_fit = []
+            y_fit = []
+            for a2, animal2 in enumerate(animals):
+                for s2 in range(rsm_parts_animals[animal2]['rsm'].shape[0]):
+                    # build model data by flattening rsm for all animals from non-s1 sequences, all animals
+                    # there will be a single label for each flattened rsm (animal id)
+                    if s1 != s2:
+                        rsm_copy = deepcopy(rsm_parts_animals[animal2]['rsm'][s2])
+                        nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+                        rsm_copy = rsm_copy[nan_mask, :][:, nan_mask]
+                        y_fit.append(a2)
+                        X_fit.append(rsm_copy.ravel())
+            X_fit, y_fit = np.array(X_fit), np.array(y_fit)
+            cgb_actual = CategoricalNB(force_alpha=True)
+            cgb_actual.fit(X=X_fit, y=y_fit)
+
+            rsm_copy = deepcopy(rsm_parts_animals[animal1]['rsm'][s1])
+            nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+            rsm_copy = rsm_copy[nan_mask, :][:, nan_mask]
+            df_animal_ID.iloc[c] = np.hstack((a1, s1, cgb_actual.predict(rsm_copy.ravel()[np.newaxis])==a1, 0))
+            c += 1
+            df_animal_ID.iloc[c] = np.hstack((a1, s1, cgb_actual.predict(np.random.permutation(rsm_copy.ravel()[
+                                                                                                   np.newaxis])) == a1,
+                                   1))
+            c += 1
+    df_animal_ID['Data'][df_animal_ID['Data']==0] = "Actual"
+    df_animal_ID['Data'][df_animal_ID['Data']==1] = "Shuffle"
+
+    cols = ["Animal", "Sequence", "Decoding Accuracy", "Data"]
+    df_animals = pd.DataFrame(data=np.zeros([2*(np.prod(rsm_parts_ordered.shape[:2]) -1), len(cols)]), columns = cols)
+    # fit label encoder to 'cannon labels'
+    onehot = OneHotEncoder(sparse_output=False)
+    onehot.fit(rsm_parts_animals['cannon_labels'])
+    # fit a linear model to rsm from all animals, and predict rsm left out
+    c=0
+    for a1, animal1 in enumerate(animals):
+        n_seq = rsm_parts_animals[animal1]['rsm'].shape[0]
+        for s in range(n_seq):
+            X = []
+            y = []
+            for a2, animal2 in enumerate(animals):
+                # if not target animal, add rsm to fit data
+                if a1 != a2:
+                    if n_seq <= rsm_parts_animals[animal2]['rsm'].shape[0]:
+                        rsm_copy = deepcopy(rsm_parts_animals[animal2]['rsm'][s])
+                        nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+                        rsm_copy = rsm_copy[nan_mask, :][:, nan_mask]
+                        y.append(rsm_copy)
+                        X.append(onehot.transform(rsm_parts_animals['cannon_labels'][nan_mask]))
+            X, y = np.array(X), np.array(y)
+            X, y = X.reshape(-1, X.shape[-1]), y.reshape(-1, y.shape[-1])
+            # fit actual model to real data
+            lm_actual = LinearRegression(n_jobs=int(1e4))
+            lm_actual.fit(X=X, y=y)
+            # fit second model to shuffle data
+            lm_shuffle = LinearRegression(n_jobs=int(1e4))
+            lm_shuffle.fit(X=np.random.permutation(X), y=y)
+
+            rsm_copy = deepcopy(rsm_parts_animals[animal1]['rsm'][s])
+            nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+            target = rsm_copy[nan_mask, :][:, nan_mask]
+            target_labels = onehot.transform(rsm_parts_animals['cannon_labels'][nan_mask])
+            df_animals.iloc[c] = np.hstack((a1, s, lm_actual.score(target_labels, target), 0))
+            c += 1
+            df_animals.iloc[c] = np.hstack((a1, s, lm_shuffle.score(target_labels, target), 1))
+            c += 1
+    df_animals['Data'][df_animals['Data'] == 0] = "Actual"
+    df_animals['Data'][df_animals['Data'] == 1] = "Shuffle"
+
+    cols = ["Animal", "Sequence1", "Sequence2", "Decoding Accuracy", "Data"]
+    df_sequences = pd.DataFrame(data=np.zeros([2 * (np.prod(rsm_parts_ordered.shape[:2]) - 1), len(cols)]),
+                                columns=cols)
+    # fit label encoder to 'cannon labels'
+    onehot = OneHotEncoder(sparse_output=False)
+    onehot.fit(rsm_parts_animals['cannon_labels'])
+    # fit a linear model to rsm from all animals, and predict rsm left out
+    c = 0
+    for a, animal in enumerate(animals):
+        n_seq = rsm_parts_animals[animal]['rsm'].shape[0]
+        for s1 in range(n_seq):
+            X = []
+            y = []
+            for s2 in range(n_seq):
+                # if not target sequence, add rsm to fit data
+                if s1 != s2:
+                    rsm_copy = deepcopy(rsm_parts_animals[animal]['rsm'][s2])
+                    nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+                    rsm_copy = rsm_copy[nan_mask, :][:, nan_mask]
+                    y.append(rsm_copy)
+                    X.append(onehot.transform(rsm_parts_animals['cannon_labels'][nan_mask]))
+            # change from list into array
+            X, y = np.array(X), np.array(y)
+            if n_seq >= 2:
+                X, y = X.reshape(-1, X.shape[-1]), y.reshape(-1, y.shape[-1])
+            # fit actual model to real data
+            lm_actual = LinearRegression(n_jobs=int(1e4))
+            lm_actual.fit(X=X, y=y)
+            # fit second model to shuffle data
+            lm_shuffle = LinearRegression(n_jobs=int(1e4))
+            lm_shuffle.fit(X=np.random.permutation(X), y=y)
+
+            rsm_copy = deepcopy(rsm_parts_animals[animal]['rsm'][s1])
+            nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+            target = rsm_copy[nan_mask, :][:, nan_mask]
+            target_labels = onehot.transform(rsm_parts_animals['cannon_labels'][nan_mask])
+            df_sequences.iloc[c] = np.hstack((a, s1, s2, lm_actual.score(target_labels, target), 0))
+            c += 1
+            df_sequences.iloc[c] = np.hstack((a, s1, s2, lm_shuffle.score(target_labels, target), 1))
+            c += 1
+    df_sequences['Data'][df_sequences['Data'] == 0] = "Actual"
+    df_sequences['Data'][df_sequences['Data'] == 1] = "Shuffle"
+
+    return df_animal_similarity, df_animal_ID, df_animals, df_sequences
+
+
+def get_partitioned_rsm_similarity_resampled(animals, rsm_parts_animals, n_samples, n_reps=10):
+    # How correlated are RSMs when we build the average from diff numbers of cells? downsample to match n cells across
+    rsm_fits_dscells = np.zeros([len(n_samples) * len(animals) ** 2 * n_reps, 5]) * np.nan
+    c = 0
+    for k in range(n_reps):
+        for n in tqdm(n_samples, desc="Fitting rsm across animals with downsampling of cell numbers",
+                      position=0, leave=True):
+            for a1, animal1 in enumerate(animals):
+                for a2, animal2 in enumerate(animals):
+                    a1_n_cells, a2_n_cells = (rsm_parts_animals[animal1]["rsm"].shape[-1],
+                                              rsm_parts_animals[animal2]["rsm"].shape[-1])
+                    cell_idx1, cell_idx2 = (np.random.choice(np.arange(a1_n_cells), n, replace=True),
+                                            np.random.choice(np.arange(a2_n_cells), n, replace=True))
+                    rsm_a1, rsm_a2 = (rsm_parts_animals[animal1]["rsm"][:, :, :, cell_idx1],
+                                      rsm_parts_animals[animal2]["rsm"][:, :, :, cell_idx2])
+                    rsm_a1, rsm_a2 = (np.nanmean(np.nanmean(rsm_a1, axis=0), axis=-1),
+                                      np.nanmean(np.nanmean(rsm_a2, axis=0), axis=-1))
+                    rsm_a1, rsm_a2 = (rsm_a1[np.tri(rsm_a1.shape[0], k=-1).astype(bool)],
+                                      rsm_a2[np.tri(rsm_a2.shape[0], k=-1).astype(bool)])
+                    nan_mask = ~np.isnan(rsm_a1 + rsm_a2)
+                    r = pearsonr(rsm_a1[nan_mask], rsm_a2[nan_mask])[0]
+                    rsm_fits_dscells[c, :] = np.hstack((a1, a2, n, k, r))
+                    c += 1
+    df = pd.DataFrame(data=rsm_fits_dscells, columns=["Animal 1", "Animal 2", "N cells", "Rep", "R"])
+    df.groupby("N cells").mean()
+    return df
 
 
 ########################################################################################################################

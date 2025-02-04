@@ -281,3 +281,205 @@ def plot_across_animal_similarity(df_map_corr_animals_sequences):
     plt.show()
     return fig
 
+
+def plot_rsm_parts_averaged(rsm_parts_averaged, vmax=1., vmin=-.1, cmap='inferno'):
+    sns.set(style='dark', font_scale=2)
+    rsm_copy = deepcopy(rsm_parts_averaged)
+    nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+    rsm_copy = rsm_copy[nan_mask, :][:, nan_mask]
+    np.fill_diagonal(rsm_copy, np.nan)
+    fig = plt.figure(figsize=(6, 6))
+    ax = plt.subplot()
+    mappable = ax.imshow(rsm_copy, cmap=cmap, vmin=vmin, vmax=vmax)
+    cbar = plt.colorbar(mappable, shrink=.8)
+    cbar.ax.set_title('R', weight='bold')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_aspect('equal')
+    plt.setp(ax.spines.values(), color='k', linewidth=4)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_rsm_parts_mds(rsm_parts_averaged, precomputed=False):
+    rsm = deepcopy(rsm_parts_averaged)
+    n_parts = 9
+    n_envs = rsm.shape[0] // n_parts
+    c_labels = np.tile(np.array([0, 3, 6, 1, 4, 7, 2, 5, 8]), n_envs)
+    p_labels = np.tile(np.arange(n_parts), n_envs)
+    env_labels = np.tile(np.arange(n_envs)[np.newaxis].T, n_parts).ravel()
+    nan_mask = ~np.isnan(rsm[np.eye(rsm.shape[0]).astype(bool)])
+    # np.random.seed(1984)
+    if precomputed:
+        mds_ = MDS(n_components=2, metric=False, n_jobs=9, n_init=1, max_iter=int(1e12), eps=1e-12, random_state=9003,
+                   dissimilarity='precomputed')
+    else:
+        mds_ = MDS(n_components=2, metric=False, n_jobs=9, n_init=1, max_iter=int(1e12), eps=1e-12, random_state=9003)
+    mds_.fit(1 - (rsm[nan_mask, :][:, nan_mask]))
+    square_average = np.vstack((np.vstack((mds_.embedding_[:n_parts, 0], mds_.embedding_[-n_parts:, 0])).mean(0),
+                                np.vstack((mds_.embedding_[:n_parts, 1], mds_.embedding_[-n_parts:, 1])).mean(0))).T
+    # measure angle of MDS embedding offset, assuming the lower-left and top-right corners of square should be 45 deg
+    theta = .25 * np.pi - np.arctan2(square_average[2, 1] - square_average[6, 1],
+                                     square_average[2, 0] - square_average[6, 0]) + np.pi
+    rotation_mat = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+    mds_.embedding_ = (rotation_mat@mds_.embedding_.T).T
+
+    sns.set(style='dark', font_scale=2.1)
+
+    # plot individual embeddings in a single figure panel
+    fig = plt.figure(figsize=(24, 10))
+    c = 1
+    for i in range(1, n_envs):
+        x1, y1 = np.vstack((mds_.embedding_[:n_parts, :][p_labels[nan_mask][env_labels[nan_mask] == i]][:, 0],
+                            mds_.embedding_[-n_parts:, :][p_labels[nan_mask][env_labels[nan_mask] == i]][:, 0])).mean(0), \
+                 np.vstack((mds_.embedding_[:n_parts, :][p_labels[nan_mask][env_labels[nan_mask] == i]][:, 1],
+                            mds_.embedding_[-n_parts:, :][p_labels[nan_mask][env_labels[nan_mask] == i]][:, 1])).mean(0)
+        x2, y2 = mds_.embedding_[env_labels[nan_mask] == i][:, 0], mds_.embedding_[env_labels[nan_mask] == i][:, 1]
+
+        ax = plt.subplot(2, n_envs//2, c)
+        c += 1
+
+        ax.scatter(np.vstack((mds_.embedding_[:n_parts, 0], mds_.embedding_[-n_parts:, 0])).mean(0),
+                   np.vstack((mds_.embedding_[:n_parts, 1], mds_.embedding_[-n_parts:, 1])).mean(0), marker="+",
+                   c="white", edgecolor="k", s=300, linewidth=3, zorder=2)
+        # ax.scatter(mds_.embedding_[env_labels[nan_mask] == i, 0], mds_.embedding_[env_labels[nan_mask] == i, 1],
+        #            s=650, c=c_labels[nan_mask][env_labels[nan_mask] == i], vmin=0, vmax=n_parts-1, alpha=1.,
+        #            cmap="cool", edgecolor='k', linewidth=0., marker='s')
+        ax.scatter(mds_.embedding_[env_labels[nan_mask] == i, 0], mds_.embedding_[env_labels[nan_mask] == i, 1],
+                   s=400, c=c_labels[nan_mask][env_labels[nan_mask] == i], vmin=0, vmax=n_parts - 1, alpha=1.,
+                   cmap="cool", edgecolor='k', linewidth=0., marker="s")
+        ax.set_facecolor('black')
+
+        for j in range(x1.shape[0]):
+            ax.plot(np.hstack((x1[j], x2[j])), np.hstack((y1[j], y2[j])), c="white", linewidth=3,
+                    linestyle=":")
+
+        ax.set_ylim([-.8, .8])
+        ax.set_yticks(np.linspace(-.8, .8, 2))
+        ax.set_xlim([-.8, .8])
+        ax.set_xticks(np.linspace(-.8, .8, 2))
+        ax.set_aspect('equal')
+        ax.set_ylabel('nMDS dim 1\n($abu$)', weight='bold', labelpad=-40)
+        ax.set_xlabel('nMDS dim 2\n($abu$)', weight='bold', labelpad=-10)
+        plt.setp(ax.spines.values(), color="gray", linewidth=4)
+
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_similarity_parts_matrix(animals, p):
+    rsm_parts_animals = get_rsm_partitioned_sequences(animals, p)
+    rsm_parts_ordered, rsm_parts_averaged = get_rsm_partitioned_similarity(rsm_parts_animals, animals, False, False)
+
+    labels = rsm_parts_animals['cannon_labels'][9:]
+
+    fig = plt.figure(figsize=(12, 5))
+    for i, e in enumerate(np.unique(labels[:, 0])):
+        mask = labels[:, 0] == e
+        sub_mat = rsm_parts_averaged[9:, :9][mask]
+        sub_mat = sub_mat[np.eye(sub_mat.shape[0]).astype(bool)][np.newaxis].reshape(3,3)
+        ax = plt.subplot(2, 5, i+1)
+        ax.imshow(sub_mat.T, vmin=0., vmax=.45, cmap='plasma')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        plt.setp(ax.spines.values(), color='k', linewidth=4)
+    plt.show()
+    return fig
+
+
+def plot_rsm_parts_examples(rsm_parts_ordered, a1=1, a2=2, vmax=.6):
+    target_rsms = np.array([[a1, 0], [a1, 1], [a1, 2], [a2, 0], [a2, 1], [a2, 2]])
+    sns.set(style='dark', font_scale=2)
+    fig = plt.figure(figsize=(16, 12))
+    for i, (t_animal, t_sequence) in enumerate(target_rsms):
+        ax = plt.subplot(target_rsms.shape[1], target_rsms.shape[0] // target_rsms.shape[1], i+1)
+
+        rsm_copy = deepcopy(rsm_parts_ordered[t_sequence, t_animal])
+        nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
+        rsm_copy = rsm_copy[nan_mask, :][:, nan_mask]
+        np.fill_diagonal(rsm_copy, np.nan)
+        ax.imshow(rsm_copy, cmap='inferno', vmin=-.2, vmax=vmax)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_aspect('equal')
+        if i == 0:
+            ax.set_ylabel("Mouse A", weight="bold")
+        elif i == 3:
+            ax.set_ylabel("Mouse B", weight="bold")
+        ax.set_title(f'Sequence {t_sequence+1}', weight='bold', pad=10)
+        plt.setp(ax.spines.values(), color='k', linewidth=4)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_partitioned_rsm_similarity(df_animal_similarity):
+    sns.set(font_scale=2.5, palette='muted', style='dark')
+    fig = plt.figure(figsize=(6,6))
+    ax = plt.subplot()
+    sns.barplot(data=df_animal_similarity, x='Sequence', y='Fit', hue='Data', edgecolor='k', width=.5,
+                        saturation=1.,
+                        linewidth=4, errcolor='k', errwidth=4, capsize=.05, palette="muted")
+    ax.set_ylabel('Across-animal\nsimilarity ($Tau$)', weight='bold')
+    ax.set_xlabel('Sequence', weight='bold')
+    ax.set_xticklabels(['1', '2', '3'])
+    ax.set_ylim([-.1, .6])
+    plt.setp(ax.spines.values(), color='k', linewidth=4)
+    plt.legend(bbox_to_anchor=(1,1))
+    plt.show()
+    return fig
+
+
+def plot_partitioned_rsm_predictions(df_animals):
+    sns.set(font_scale=2.5, palette='muted', style='dark')
+    fig = plt.figure(figsize=(6,6))
+    ax = plt.subplot()
+    sns.barplot(data=df_animals, x='Sequence', y='Decoding Accuracy', hue='Data', edgecolor='k', width=.5, saturation=1.,
+                    linewidth=4, errcolor='k', errwidth=4, capsize=.05, palette="muted")
+    ax.set_ylabel('Across-animal\nRSM decoding ($R^2$)', weight='bold')
+    ax.set_ylim([-.25, .75])
+    ax.set_xlabel('Sequence', weight='bold')
+    ax.set_xticklabels(['1', '2', '3'])
+    plt.setp(ax.spines.values(), color='k', linewidth=4)
+    plt.legend(bbox_to_anchor=(1,1))
+    plt.show()
+    return fig
+
+
+def plot_animal_id_predictions(df_animal_ID):
+    sns.set(font_scale=2.5, palette='muted', style='dark')
+    fig = plt.figure(figsize=(6,6))
+    ax = plt.subplot()
+    sns.barplot(data=df_animal_ID, x='Sequence', y='Correct', hue='Data', edgecolor='k', width=.5, saturation=1.,
+                    linewidth=4, errcolor='k', errwidth=4, capsize=.05, errorbar=None, palette="muted")
+    ax.set_ylabel('Animal decoding (prob)', weight='bold')
+    ax.set_ylim([0, .75])
+    ax.set_xlabel('Sequence', weight='bold')
+    ax.set_xticklabels(['1', '2', '3'])
+    plt.setp(ax.spines.values(), color='k', linewidth=4)
+    plt.legend(bbox_to_anchor=(1.65,1.))
+    plt.show()
+    return fig
+
+
+def plot_rsm_partitioned_similarity_resampled(df, n_samples):
+    sns.set(style="dark", font_scale=2.25)
+    fig = plt.figure(figsize=(6, 6))
+    ax = plt.subplot()
+    # sns.barplot(data=df, x="N cells", y="R", estimator="mean", errorbar="se")
+    sns.lineplot(data=df.groupby("N cells").mean(), x="N cells", y="R",
+                 color="gray", linestyle="--", linewidth=4., zorder=0)
+    sns.scatterplot(data=df.groupby("N cells").mean(), x="N cells", y="R",
+                    s=150, c=df.groupby("N cells").mean()["R"], edgecolor="k",
+                    linewidth=4., zorder=1)
+    ax.set_ylim([0, 1.])
+    ax.set_xticks(n_samples[::4] + [1000])
+    ax.set_xticklabels(n_samples[::4] + [1000], rotation=90)
+    ax.set_ylabel("Across-animal\nsimilarity ($R$)", weight="bold")
+    ax.set_xlabel("Sub-sampled cells", weight="bold")
+    plt.setp(ax.spines.values(), color="k", linewidth=4.)
+    plt.tight_layout()
+    plt.show()
+    return fig
