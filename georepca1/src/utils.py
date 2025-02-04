@@ -10,6 +10,7 @@ import matplotlib
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from sklearn.model_selection import KFold
 from sklearn.naive_bayes import GaussianNB
+from sklearn.manifold import MDS
 import torch
 from torch.nn import AvgPool1d
 import seaborn as sns
@@ -22,6 +23,20 @@ from mat73 import loadmat
 import joblib
 from tqdm import tqdm
 import numpy as np
+from statsmodels.formula.api import ols
+from statsmodels.stats.anova import anova_lm
+from statsmodels.stats.proportion import proportions_chisquare as chisquare
+from scipy.stats import ttest_1samp
+from scipy.stats import sem
+import matplotlib.path as mpath
+import matplotlib.patches as patches
+from scipy.cluster.hierarchy import linkage, dendrogram
+from sklearn.base import BaseEstimator
+from sklearn.metrics import euclidean_distances
+from sklearn.utils import check_random_state, check_array, check_symmetric
+from sklearn.isotonic import IsotonicRegression
+from sklearn.utils.validation import _deprecate_positional_args
+from joblib import Parallel, delayed, effective_n_jobs
 
 
 def load_dat(animal, p, to_convert=["envs", "position", "trace"], format="MATLAB"):
@@ -86,6 +101,66 @@ def trace_sfps(SFPs):
                                        np.hstack((np.zeros(SFPs_bin.shape[1])[np.newaxis].T,
                                                   np.diff(SFPs_bin, axis=1)))).astype(bool)
     return SFPs_traced.astype(int)
+
+
+def get_environment_label(env_name, flipud=False):
+    '''
+    get_environment label will return a custom maker from environment name as input that can be used for plotting
+    '''
+    codes = False
+    # First draw vertices that will create the shape of the environment based on input name (env names in weirdGeos dat)
+    if env_name == 'square':
+        polys = np.array([[0, 0], [0, 30], [30, 30], [30, 0], [0, 0]])-15
+    elif env_name == 'o':
+        polys_outside = np.array([[0, 0], [0, 30], [30, 30], [30, 0], [0, 0]]) - 15
+        polys_inside = np.array([[10, 10], [10, 21], [21, 21], [21, 10], [10, 10]]) - 15
+        polys = np.concatenate((polys_outside[::1], polys_inside[::-1]))
+        codes = np.ones(polys.shape[0], dtype=mpath.Path.code_type) * mpath.Path.LINETO
+        codes[0] = mpath.Path.MOVETO
+        codes[5] = mpath.Path.MOVETO
+    elif env_name == 't':
+        polys = np.array([[10, 0], [10, 21], [0, 21], [0, 30], [30, 30], [30, 21], [21, 21], [21, 0], [10, 0]]) - 15
+    elif env_name == 'u':
+        if flipud:
+            polys = np.array([[0, 0], [0, 10], [21, 10], [21, 21], [0, 21], [0, 30], [30, 30], [30, 0], [0, 0]]) - 15
+        else:
+            polys = np.array([[0, 0], [30, 0], [30, 10], [10, 10], [10, 21], [30, 21], [30, 30], [0, 30], [0, 0]]) - 15
+    elif env_name == 'rectangle':
+        polys = np.array([[10, 0], [30, 0], [30, 30], [10, 30], [10, 0]]) - 15
+    elif env_name == '+':
+        polys = np.array([[0, 10], [10, 10], [10, 0], [21, 0], [21, 10], [30, 10], [30, 21], [21, 21], [21, 30],
+                          [10, 30], [10, 21], [0, 21], [0, 10]]) - 15
+    elif env_name == 'i':
+        polys = np.array([[0, 0], [30, 0], [30, 10], [21, 10], [21, 21], [30, 21], [30, 30], [0, 30], [0, 21],
+                          [10, 21], [10, 10], [0, 10], [0, 0]]) - 15
+    elif env_name == 'l':
+        if flipud:
+            polys = np.array([[0, 0], [0, 10], [21, 10], [21, 30], [30, 30], [30, 0], [0, 0]]) - 15
+        else:
+            polys = np.array([[0, 0], [0, 30], [10, 30], [10, 10], [30, 10], [30, 0], [0, 0]]) - 15
+    elif env_name == 'bit donut':
+        if flipud:
+            polys = np.array([[0, 0], [30, 0], [30, 21], [21, 21], [21, 10], [10, 10], [10, 21], [21, 21], [21, 30],
+                              [0, 30], [0, 0]]) - 15
+        else:
+            polys = np.array([[0, 0], [30, 0], [30, 30], [10, 30], [10, 21], [21, 21], [21, 10], [10, 10], [10, 21],
+                                  [0, 21], [0, 0]]) - 15
+    elif env_name == 'glenn':
+        if flipud:
+            polys = np.array([[0,  0], [0, 21], [9, 21], [9, 30], [30, 30], [30, 9], [21, 9], [21, 0], [0, 0]]) - 15
+        else:
+            polys = np.array([[10, 0], [30, 0], [30, 21], [21, 21], [21, 30], [0, 30], [0, 10], [10, 10], [10, 0]]) - 15
+    # Use Path function to create image path that matplotlib can plot
+    if np.any(codes):
+        if flipud:
+            return mpath.Path(np.fliplr(polys), codes), -1 * polys
+        else:
+            return mpath.Path(np.fliplr(polys), codes), polys
+    else:
+        if flipud:
+            return mpath.Path(np.fliplr(polys)), -1 * polys
+        else:
+            return mpath.Path(np.fliplr(polys)), polys
 
 
 ########################################################################################################################
@@ -215,6 +290,111 @@ def get_shr_within(dat, animal, nsims=1000):
                                                         dat[animal]['trace'][day].T, nsims=nsims)
     p_vals, place_cells = np.array(p_vals).T, np.array(place_cells).T
     return p_vals, place_cells
+
+
+########################################################################################################################
+# Representational similarity functions for RSM construction
+def get_cell_rsm(maps, down_sample_mask=None, unsmoothed=False, d_thresh=0):
+    # first load in either smoothed or unsmoothed rate maps depending on input arg
+    if unsmoothed:
+        # when loading in transpose the maps such that the cell and day axes come first
+        maps = deepcopy(maps['unsmoothed']).transpose((2, 3, 0, 1))
+    else:
+        maps = deepcopy(maps['smoothed']).transpose((2, 3, 0, 1))
+    # then use a down-sampling mask to nan out cells if down_sample_mask is
+    # provided with a masking (n_cells, n_days)
+    if np.any(down_sample_mask):
+        maps[~down_sample_mask] = np.nan
+    # transpose the rate maps back to their original order (xdim, ydim, ncell, ndays)
+    maps = maps.transpose((2, 3, 0, 1))
+    n_days = maps.shape[-1]
+    # flatten the rate maps
+    flat_maps = maps.reshape(maps.shape[0] * maps.shape[1], maps.shape[2], maps.shape[3])
+    # create a mask to avoid correlating nans
+    nan_idx = np.isnan(flat_maps)
+    reg_idx = np.any(~nan_idx, axis=0)
+    cell_idx = np.where(reg_idx.sum(axis=1) >= d_thresh)[0]
+    cell_rsm = np.zeros([n_days, n_days, cell_idx.shape[0]])
+    for c, cell in tqdm(enumerate(cell_idx), leave=True, position=0,
+                        desc='Correlating ratemaps across days and cell pairs'):
+        for s1 in range(n_days):
+            for s2 in range(n_days):
+                s1_map, s2_map = flat_maps[:, cell, s1], flat_maps[:, cell, s2]
+                if np.any(~np.isnan(s1_map)) and np.any(~np.isnan(s2_map)):
+                    nan_mask = ~np.isnan(np.vstack((s1_map, s2_map)).sum(axis=0))
+                    cell_rsm[s1, s2, c] = pearsonr(s1_map[nan_mask],
+                                                   s2_map[nan_mask])[0]
+                else:
+                    cell_rsm[s1, s2, c] = np.nan
+    return cell_rsm, cell_idx
+
+
+def get_mean_map_corr(animals, p):
+    p_data = os.path.join(p, "data")
+    # build rate map correlations across geometries, averaging first within animals across sequences, then across animal
+    map_corr_animals_sequences = np.zeros([len(animals), 3, 11, 11]) * np.nan
+    for a, animal in enumerate(animals):
+        # temp = joblib.load(os.path.join(p_data, f"{animal}_rate_maps"))
+        temp = load_dat(animal, p, format="joblib")
+        maps, envs = temp[animal]["maps"], temp[animal]["envs"].ravel()
+        s_days = np.vstack((np.where(envs == "square")[0][:-1], np.where(envs == "square")[0][1:])).T
+        if a == 0:
+            cannon_order = envs[1:10]
+            labels = np.array(["square"] + list(cannon_order) + ["square"])
+        else:
+            for s1, s2 in s_days:
+                reorder_idx = np.array([np.where(envs[s1+1:s2] == e)[0]+(s1+1) for e in cannon_order]).ravel()
+                maps["smoothed"] = maps["smoothed"].transpose()
+                maps["smoothed"][s1+1:s2] = maps["smoothed"][reorder_idx]
+                maps["smoothed"] = maps["smoothed"].T
+        # build rsm
+        map_corr, _ = get_cell_rsm(maps)
+        for seq, (s1, s2) in enumerate(s_days):
+            map_corr_animals_sequences[a, seq, :, :] = np.nanmean(map_corr[s1:s2 + 1, s1:s2 + 1], axis=-1)
+            if seq == 0:
+                seq_mean = np.nanmean(map_corr[s1:s2+1, s1:s2+1], axis=-1)[:, :, np.newaxis]
+            else:
+                seq_mean = np.dstack((seq_mean, np.nanmean(map_corr[s1:s2+1, s1:s2+1], axis=-1)[:, :, np.newaxis]))
+
+        if a == 0:
+            animals_mean = np.nanmean(seq_mean, axis=-1)[:, :, np.newaxis]
+        else:
+            animals_mean = np.dstack((animals_mean, np.nanmean(seq_mean, axis=-1)[:, :, np.newaxis]))
+    mean_map_corr = animals_mean.mean(-1)
+    return mean_map_corr, cannon_order, labels, map_corr_animals_sequences
+
+
+def get_rsm_similarity_animals_sequences(animals, p, nsims=100, s_prop=0.9):
+    np.random.seed(2023)
+    map_corr_envs = joblib.load(os.path.join(p, "results", "map_corr_envs"))
+    map_corr_animals_sequences = map_corr_envs["map_corr_animals_sequences"]
+    cols = ["Animal A", "Animal B", "Sequence", "Fit", "Shuffle"]
+    map_corr_animal_sequence_similarity = np.zeros([len(animals) ** 2 * 3 * nsims * 2, len(cols)]) * np.nan
+    c = 0
+    for s in range(map_corr_animals_sequences.shape[1]):
+        for a1 in tqdm(range(len(animals)), desc="Calculating rate map correlation rsm similarity across animals",
+                       position=0, leave=True):
+            for a2 in range(len(animals)):
+                temp_corr1, temp_corr2 = map_corr_animals_sequences[a1, s, :, :], map_corr_animals_sequences[a2, s, :,
+                                                                                  :]
+                for i in range(nsims):
+                    choice_idx = np.argwhere(np.tri(temp_corr1.shape[0], k=-1))
+                    choice_idx = choice_idx[np.random.choice(np.arange(choice_idx.shape[0]),
+                                                             size=int(choice_idx.shape[0] * s_prop),
+                                                             replace=True)]
+                    if np.any(~np.isnan(temp_corr1)) and np.any(~np.isnan(temp_corr2)):
+                        actual = kendalltau(temp_corr1[choice_idx], temp_corr2[choice_idx])[0]
+                        shuffle = kendalltau(np.random.permutation(temp_corr1)[choice_idx], temp_corr2[choice_idx])[0]
+                        map_corr_animal_sequence_similarity[c] = np.hstack((a1, a2, s + 1, actual, False))
+                        c += 1
+                        map_corr_animal_sequence_similarity[c] = np.hstack((a1, a2, s + 1, shuffle, True))
+                        c += 1
+
+    df_map_corr_animals_sequences = pd.DataFrame(data=map_corr_animal_sequence_similarity, columns=cols)
+    df_map_corr_animals_sequences.dropna(axis=0, inplace=True)
+    df_map_corr_animals_sequences = df_map_corr_animals_sequences[df_map_corr_animals_sequences["Animal A"] !=
+                                                                  df_map_corr_animals_sequences["Animal B"]]
+    return df_map_corr_animals_sequences
 
 
 ########################################################################################################################
@@ -353,3 +533,431 @@ def decode_position_within(behav, traces, maps, n_bins=15, fps=30, v_filt_size=5
             imse[:, :, d] = 1 / err_squared_map
 
     return distances, np.sqrt(mse), imse, coherence_maps
+
+
+########################################################################################################################
+# Methods to build dataframes for plotting and stats from numpy arrays and nested dictionaries
+def get_all_shr_pvals(animals, p):
+    '''
+    function will collect all pre-calculated p values for every cell across animals into single dataframe
+    for subsequent analysis and plotting
+    :param animals: list of animals included to collect pre-calculated p values
+    :param p: path to pre-calculated p values
+    :return: df_pvals: pandas dataframe indicating SHR p value for each cell and day
+    '''
+    p_results = os.path.join(p, "results")
+    group_p_vals = {}
+    animal_days = np.zeros(len(animals)) * np.nan
+    # use cell num counter for later initialization of the pvals mat across animals and days
+    total_cells = 0
+    for a, animal in enumerate(animals):
+        group_p_vals[animal] = joblib.load(os.path.join(p_results, f'{animal}_shr'))
+        total_cells += group_p_vals[animal].shape[0]
+        animal_days[a] = group_p_vals[animal].shape[1]
+    max_days = animal_days.max()
+    p_vals = np.zeros([total_cells, int(max_days)]) * np.nan
+    animal_id = np.zeros([total_cells, int(max_days)]) * np.nan
+    idx = 0
+    for a, animal in enumerate(animals):
+        n_cells, n_days = group_p_vals[animal].shape
+        p_vals[idx:idx + n_cells, :n_days] = group_p_vals[animal]
+        animal_id[idx:idx + n_cells, :n_days] = a
+        idx += n_cells
+    cols = ['Animal', 'Day', 'Cell', 'SHR']
+    df_pvals = pd.DataFrame(columns=cols, data=np.zeros([p_vals.ravel().shape[0], len(cols)])*np.nan)
+    idx = 0
+    for c in range(p_vals.shape[0]):
+        for d in range(p_vals.shape[1]):
+           df_pvals.iloc[idx] = pd.Series(np.array([animal_id[c, d], d, c, p_vals[c, d]]))
+           idx += 1
+    return df_pvals.dropna(axis=0)
+
+
+def get_all_decoding_within(animals, p):
+    p_results = os.path.join(p, "results")
+    group_decoding = joblib.load(os.path.join(p_results, "within_decoding"))
+    n_animals = len(list(group_decoding.keys()))
+    max_days = max([group_decoding[animal]['decoding_error'].shape[0] for animal in list(group_decoding.keys())])
+    decoding = np.zeros([n_animals, int(max_days)]) * np.nan
+    for a, animal in enumerate(animals):
+        n_days = group_decoding[animal]['decoding_error'].shape[0]
+        decoding[a, :n_days] = group_decoding[animal]['decoding_error'].mean(1)
+    cols = ['Day', 'Animal', 'Error']
+    df_decoding = pd.DataFrame(columns=cols, data=np.zeros([decoding.ravel().shape[0], len(cols)])*np.nan)
+    idx = 0
+    for a in range(decoding.shape[0]):
+        for d in range(decoding.shape[1]):
+            df_decoding.iloc[idx] = pd.Series(np.array([d, a, decoding[a, d]]))
+            idx += 1
+    return df_decoding.dropna(axis=0)
+
+
+########################################################################################################################
+# MDS method with fixes to non-metric method
+def _smacof_single(dissimilarities, metric=True, n_components=2, init=None,
+                   max_iter=300, verbose=0, eps=1e-3, random_state=None):
+    """Computes multidimensional scaling using SMACOF algorithm
+    Parameters
+    ----------
+    dissimilarities : ndarray, shape (n_samples, n_samples)
+        Pairwise dissimilarities between the points. Must be symmetric.
+    metric : boolean, optional, default: True
+        Compute metric or nonmetric SMACOF algorithm.
+    n_components : int, optional, default: 2
+        Number of dimensions in which to immerse the dissimilarities. If an
+        ``init`` array is provided, this option is overridden and the shape of
+        ``init`` is used to determine the dimensionality of the embedding
+        space.
+    init : ndarray, shape (n_samples, n_components), optional, default: None
+        Starting configuration of the embedding to initialize the algorithm. By
+        default, the algorithm is initialized with a randomly chosen array.
+    max_iter : int, optional, default: 300
+        Maximum number of iterations of the SMACOF algorithm for a single run.
+    verbose : int, optional, default: 0
+        Level of verbosity.
+    eps : float, optional, default: 1e-3
+        Relative tolerance with respect to stress at which to declare
+        convergence.
+    random_state : int, RandomState instance, default=None
+        Determines the random number generator used to initialize the centers.
+        Pass an int for reproducible results across multiple function calls.
+        See :term: `Glossary <random_state>`.
+    Returns
+    -------
+    X : ndarray, shape (n_samples, n_components)
+        Coordinates of the points in a ``n_components``-space.
+    stress : float
+        The final value of the stress (sum of squared distance of the
+        disparities and the distances for all constrained points).
+    n_iter : int
+        The number of iterations corresponding to the best stress.
+    """
+    dissimilarities = check_symmetric(dissimilarities, raise_exception=True)
+
+    n_samples = dissimilarities.shape[0]
+    random_state = check_random_state(random_state)
+
+    sim_flat = ((1 - np.tri(n_samples)) * dissimilarities).ravel()
+    sim_flat_w = sim_flat[sim_flat != 0]
+    if init is None:
+        # Randomly choose initial configuration
+        X = random_state.rand(n_samples * n_components)
+        X = X.reshape((n_samples, n_components))
+    else:
+        # overrides the parameter p
+        n_components = init.shape[1]
+        if n_samples != init.shape[0]:
+            raise ValueError("init matrix should be of shape (%d, %d)" %
+                             (n_samples, n_components))
+        X = init
+
+    old_stress = None
+    ir = IsotonicRegression()
+    for it in range(max_iter):
+        # Compute distance and monotonic regression
+        dis = euclidean_distances(X)
+
+        if metric:
+            disparities = dissimilarities
+        else:
+            dis_flat = dis.ravel()
+            # dissimilarities with 0 are considered as missing values
+            dis_flat_w = dis_flat[sim_flat != 0]
+
+            # Compute the disparities using a isotonic regression
+            disparities = ir.fit_transform(dissimilarities.ravel(), dis.ravel()).reshape(n_samples, n_samples)
+            # disparities = dis_flat.copy()
+            # disparities[sim_flat != 0] = disparities_flat
+            # sim = sim_flat.reshape((n_samples, n_samples))
+            # disparities = disparities.reshape((n_samples, n_samples))
+            # disparities[sim_flat.T!=0] = disprities[sim_flat!=0]
+            disparities *= np.sqrt((n_samples * (n_samples - 1) / 2) /
+                                   (disparities ** 2).sum())
+
+        # Compute stress
+        if metric:
+            stress = np.sqrt(((dis.ravel() - disparities.ravel()) ** 2).sum() / disparities.ravel().sum())
+        else:
+            stress = np.sqrt(((dis.ravel() - disparities.ravel()) ** 2).sum() / dis.ravel().sum())
+
+        # Update X using the Guttman transform
+        dis[dis == 0] = 1e-5
+        ratio = disparities / dis
+        B = - ratio
+        B[np.arange(len(B)), np.arange(len(B))] += ratio.sum(axis=1)
+        X = 1. / n_samples * np.dot(B, X)
+
+        dis = np.sqrt((X ** 2).sum(axis=1)).sum()
+        if verbose >= 2:
+            print('it: %d, stress %s' % (it, stress))
+        if old_stress is not None:
+            if (old_stress - stress / dis) < eps:
+                if verbose:
+                    print('breaking at iteration %d with stress %s' % (it,
+                                                                       stress))
+                break
+        old_stress = stress / dis
+
+    return X, stress, it + 1
+
+
+@_deprecate_positional_args
+def smacof(dissimilarities, *, metric=True, n_components=2, init=None,
+           n_init=8, n_jobs=None, max_iter=300, verbose=0, eps=1e-3,
+           random_state=None, return_n_iter=False):
+    """Computes multidimensional scaling using the SMACOF algorithm.
+    The SMACOF (Scaling by MAjorizing a COmplicated Function) algorithm is a
+    multidimensional scaling algorithm which minimizes an objective function
+    (the *stress*) using a majorization technique. Stress majorization, also
+    known as the Guttman Transform, guarantees a monotone convergence of
+    stress, and is more powerful than traditional techniques such as gradient
+    descent.
+    The SMACOF algorithm for metric MDS can summarized by the following steps:
+    1. Set an initial start configuration, randomly or not.
+    2. Compute the stress
+    3. Compute the Guttman Transform
+    4. Iterate 2 and 3 until convergence.
+    The nonmetric algorithm adds a monotonic regression step before computing
+    the stress.
+    Parameters
+    ----------
+    dissimilarities : ndarray, shape (n_samples, n_samples)
+        Pairwise dissimilarities between the points. Must be symmetric.
+    metric : boolean, optional, default: True
+        Compute metric or nonmetric SMACOF algorithm.
+    n_components : int, optional, default: 2
+        Number of dimensions in which to immerse the dissimilarities. If an
+        ``init`` array is provided, this option is overridden and the shape of
+        ``init`` is used to determine the dimensionality of the embedding
+        space.
+    init : ndarray, shape (n_samples, n_components), optional, default: None
+        Starting configuration of the embedding to initialize the algorithm. By
+        default, the algorithm is initialized with a randomly chosen array.
+    n_init : int, optional, default: 8
+        Number of times the SMACOF algorithm will be run with different
+        initializations. The final results will be the best output of the runs,
+        determined by the run with the smallest final stress. If ``init`` is
+        provided, this option is overridden and a single run is performed.
+    n_jobs : int or None, optional (default=None)
+        The number of jobs to use for the computation. If multiple
+        initializations are used (``n_init``), each run of the algorithm is
+        computed in parallel.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
+    max_iter : int, optional, default: 300
+        Maximum number of iterations of the SMACOF algorithm for a single run.
+    verbose : int, optional, default: 0
+        Level of verbosity.
+    eps : float, optional, default: 1e-3
+        Relative tolerance with respect to stress at which to declare
+        convergence.
+    random_state : int, RandomState instance, default=None
+        Determines the random number generator used to initialize the centers.
+        Pass an int for reproducible results across multiple function calls.
+        See :term: `Glossary <random_state>`.
+    return_n_iter : bool, optional, default: False
+        Whether or not to return the number of iterations.
+    Returns
+    -------
+    X : ndarray, shape (n_samples, n_components)
+        Coordinates of the points in a ``n_components``-space.
+    stress : float
+        The final value of the stress (sum of squared distance of the
+        disparities and the distances for all constrained points).
+    n_iter : int
+        The number of iterations corresponding to the best stress. Returned
+        only if ``return_n_iter`` is set to ``True``.
+    Notes
+    -----
+    "Modern Multidimensional Scaling - Theory and Applications" Borg, I.;
+    Groenen P. Springer Series in Statistics (1997)
+    "Nonmetric multidimensional scaling: a numerical method" Kruskal, J.
+    Psychometrika, 29 (1964)
+    "Multidimensional scaling by optimizing goodness of fit to a nonmetric
+    hypothesis" Kruskal, J. Psychometrika, 29, (1964)
+    """
+
+    dissimilarities = check_array(dissimilarities)
+    random_state = check_random_state(random_state)
+
+    if hasattr(init, '__array__'):
+        init = np.asarray(init).copy()
+        if not n_init == 1:
+            warnings.warn(
+                'Explicit initial positions passed: '
+                'performing only one init of the MDS instead of %d'
+                % n_init)
+            n_init = 1
+
+    best_pos, best_stress = None, None
+
+    if effective_n_jobs(n_jobs) == 1:
+        for it in range(n_init):
+            pos, stress, n_iter_ = _smacof_single(
+                dissimilarities, metric=metric,
+                n_components=n_components, init=init,
+                max_iter=max_iter, verbose=verbose,
+                eps=eps, random_state=random_state)
+            if best_stress is None or stress < best_stress:
+                best_stress = stress
+                best_pos = pos.copy()
+                best_iter = n_iter_
+    else:
+        seeds = random_state.randint(np.iinfo(np.int32).max, size=n_init)
+        results = Parallel(n_jobs=n_jobs, verbose=max(verbose - 1, 0))(
+            delayed(_smacof_single)(
+                dissimilarities, metric=metric, n_components=n_components,
+                init=init, max_iter=max_iter, verbose=verbose, eps=eps,
+                random_state=seed)
+            for seed in seeds)
+        positions, stress, n_iters = zip(*results)
+        best = np.argmin(stress)
+        best_stress = stress[best]
+        best_pos = positions[best]
+        best_iter = n_iters[best]
+
+    if return_n_iter:
+        return best_pos, best_stress, best_iter
+    else:
+        return best_pos, best_stress
+
+
+class MDS(BaseEstimator):
+    """Multidimensional scaling
+    Read more in the :ref:`User Guide <multidimensional_scaling>`.
+    Parameters
+    ----------
+    n_components : int, optional, default: 2
+        Number of dimensions in which to immerse the dissimilarities.
+    metric : boolean, optional, default: True
+        If ``True``, perform metric MDS; otherwise, perform nonmetric MDS.
+    n_init : int, optional, default: 4
+        Number of times the SMACOF algorithm will be run with different
+        initializations. The final results will be the best output of the runs,
+        determined by the run with the smallest final stress.
+    max_iter : int, optional, default: 300
+        Maximum number of iterations of the SMACOF algorithm for a single run.
+    verbose : int, optional, default: 0
+        Level of verbosity.
+    eps : float, optional, default: 1e-3
+        Relative tolerance with respect to stress at which to declare
+        convergence.
+    n_jobs : int or None, optional (default=None)
+        The number of jobs to use for the computation. If multiple
+        initializations are used (``n_init``), each run of the algorithm is
+        computed in parallel.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
+    random_state : int, RandomState instance, default=None
+        Determines the random number generator used to initialize the centers.
+        Pass an int for reproducible results across multiple function calls.
+        See :term: `Glossary <random_state>`.
+    dissimilarity : 'euclidean' | 'precomputed', optional, default: 'euclidean'
+        Dissimilarity measure to use:
+        - 'euclidean':
+            Pairwise Euclidean distances between points in the dataset.
+        - 'precomputed':
+            Pre-computed dissimilarities are passed directly to ``fit`` and
+            ``fit_transform``.
+    Attributes
+    ----------
+    embedding_ : array-like, shape (n_samples, n_components)
+        Stores the position of the dataset in the embedding space.
+    stress_ : float
+        The final value of the stress (sum of squared distance of the
+        disparities and the distances for all constrained points).
+    Examples
+    --------
+    >>> from sklearn.datasets import load_digits
+    >>> from sklearn.manifold import MDS
+    >>> X, _ = load_digits(return_X_y=True)
+    >>> X.shape
+    (1797, 64)
+    >>> embedding = MDS(n_components=2)
+    >>> X_transformed = embedding.fit_transform(X[:100])
+    >>> X_transformed.shape
+    (100, 2)
+    References
+    ----------
+    "Modern Multidimensional Scaling - Theory and Applications" Borg, I.;
+    Groenen P. Springer Series in Statistics (1997)
+    "Nonmetric multidimensional scaling: a numerical method" Kruskal, J.
+    Psychometrika, 29 (1964)
+    "Multidimensional scaling by optimizing goodness of fit to a nonmetric
+    hypothesis" Kruskal, J. Psychometrika, 29, (1964)
+    """
+
+    @_deprecate_positional_args
+    def __init__(self, n_components=2, *, metric=True, n_init=4,
+                 max_iter=300, verbose=0, eps=1e-3, n_jobs=None,
+                 random_state=None, dissimilarity="euclidean"):
+        self.n_components = n_components
+        self.dissimilarity = dissimilarity
+        self.metric = metric
+        self.n_init = n_init
+        self.max_iter = max_iter
+        self.eps = eps
+        self.verbose = verbose
+        self.n_jobs = n_jobs
+        self.random_state = random_state
+
+    @property
+    def _pairwise(self):
+        return self.kernel == "precomputed"
+
+    def fit(self, X, y=None, init=None):
+        """
+        Computes the position of the points in the embedding space
+        Parameters
+        ----------
+        X : array, shape (n_samples, n_features) or (n_samples, n_samples)
+            Input data. If ``dissimilarity=='precomputed'``, the input should
+            be the dissimilarity matrix.
+        y : Ignored
+        init : ndarray, shape (n_samples,), optional, default: None
+            Starting configuration of the embedding to initialize the SMACOF
+            algorithm. By default, the algorithm is initialized with a randomly
+            chosen array.
+        """
+        self.fit_transform(X, init=init)
+        return self
+
+    def fit_transform(self, X, y=None, init=None):
+        """
+        Fit the data from X, and returns the embedded coordinates
+        Parameters
+        ----------
+        X : array, shape (n_samples, n_features) or (n_samples, n_samples)
+            Input data. If ``dissimilarity=='precomputed'``, the input should
+            be the dissimilarity matrix.
+        y : Ignored
+        init : ndarray, shape (n_samples,), optional, default: None
+            Starting configuration of the embedding to initialize the SMACOF
+            algorithm. By default, the algorithm is initialized with a randomly
+            chosen array.
+        """
+        X = self._validate_data(X)
+        if X.shape[0] == X.shape[1] and self.dissimilarity != "precomputed":
+            warnings.warn("The MDS API has changed. ``fit`` now constructs an"
+                          " dissimilarity matrix from data. To use a custom "
+                          "dissimilarity matrix, set "
+                          "``dissimilarity='precomputed'``.")
+
+        if self.dissimilarity == "precomputed":
+            self.dissimilarity_matrix_ = X
+        elif self.dissimilarity == "euclidean":
+            self.dissimilarity_matrix_ = euclidean_distances(X)
+        else:
+            raise ValueError("Proximity must be 'precomputed' or 'euclidean'."
+                             " Got %s instead" % str(self.dissimilarity))
+
+        self.embedding_, self.stress_, self.n_iter_ = smacof(
+            self.dissimilarity_matrix_, metric=self.metric,
+            n_components=self.n_components, init=init, n_init=self.n_init,
+            n_jobs=self.n_jobs, max_iter=self.max_iter, verbose=self.verbose,
+            eps=self.eps, random_state=self.random_state,
+            return_n_iter=True)
+
+        return self.embedding_
