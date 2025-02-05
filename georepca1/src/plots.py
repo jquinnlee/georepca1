@@ -483,3 +483,96 @@ def plot_rsm_partitioned_similarity_resampled(df, n_samples):
     plt.tight_layout()
     plt.show()
     return fig
+
+
+def plot_heuristic_model_fits(euc_fit, euc_se, bound_fit, bound_se, traj_fit, traj_se, noise_margin_agg):
+    fig = plt.figure(figsize=(4, 6))
+    sns.set(palette="muted", style="dark", font_scale=2.)
+    ax = plt.subplot()
+    ax.bar(x=0, height=euc_fit, linewidth=4., edgecolor="k", width=0.5)
+    ax.errorbar(x=0, y=euc_fit, yerr=euc_se, linewidth=4., color="k")
+    ax.bar(x=1, height=bound_fit, linewidth=4., edgecolor="k", width=0.5)
+    ax.errorbar(x=1, y=bound_fit, yerr=bound_se, linewidth=4., color="k")
+    ax.bar(x=2, height=traj_fit, linewidth=4., edgecolor="k", width=0.5)
+    ax.errorbar(x=2, y=traj_fit, yerr=traj_se, linewidth=4., color="k")
+    ax.axhline(noise_margin_agg.mean(0)[0], color="b", linewidth=4.)
+    ax.axhline(noise_margin_agg.mean(0)[1], color="b", linewidth=4.)
+    plt.setp(ax.spines.values(),linewidth=4., color="k")
+    ax.set_xlim(-.5, 2.5)
+    ax.set_ylim(0., 0.75)
+    ax.set_ylabel("CA1 fit ($Tau$)", weight="bold")
+    ax.set_xticks(np.arange(3))
+    ax.set_xticklabels(["Euclidean", "Boundaries", "Trajectory"], rotation=90)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_riab_example(animal="QLAK-CA1-08", p=r'/Users/jquinnlee/Desktop/georep_hipp', shape="square",
+                      const=0.08, scalar=12):
+    fps = 30
+    behav_dict = joblib.load(os.path.join(p, 'behav_dict'))[animal]
+    env_idx = np.amin(np.where(behav_dict["envs"] == shape)[0])
+    position = behav_dict["position"][env_idx]
+    position = 75 * 0.01 * (position / position.max())
+    Env = Environment(params={'aspect': 1, 'scale': .75, 'dimensionality': '2D'})
+    if shape:
+        deform_environment(Env, shape)
+    Ag = Agent(Env, params={"dt":1/fps})
+    np.random.seed(2023)
+    GC = GridCells(Ag, params={"n": 10,
+                               "gridscale_distribution": "logarithmic",
+                               "gridscale": (0.28, .73),
+                               "orientation_distribution": "uniform",
+                               "orientation": (0, 2 * np.pi),
+                               "phase_offset_distribution": "uniform",
+                               "phase_offset": (0, 2 * np.pi),  # degrees
+                               "description": "three_shifted_cosines",
+                               "min_fr": 0,
+                               "max_fr": 1,
+                               "name": "GridCells"})
+
+
+    BVC = BoundaryVectorCells(Ag, params={"n": 10,
+                                          "reference_frame": "allocentric",
+                                          "tuning_distance_distribution": "uniform",
+                                          "tuning_distance": (0, 0.85),
+                                          "tuning_angle_distribution": "uniform",
+                                          "sigma_distance": (const, scalar),
+                                          "sigma_angle": (11.25, 11.25),
+                                          "sigma_angle_distribution": "uniform",
+                                          "dtheta": 2,
+                                          "min_fr": 0,
+                                          "max_fr": 1,
+                                          "name": "BoundaryVectorCells",
+                                          "color": "C2"})
+
+    Ag.import_trajectory(times=[i/fps for i in range(position.shape[1])],
+                         positions=position.T,
+                         interpolate=False)
+    # history is not imported with import trajecotry, and needs to be initialized
+    for key in list(Ag.history.keys()):
+        Ag.history[key] = [0]
+    # Simulate
+    T = position.shape[-1]
+    # update first time step with actual data
+    for i in range(int(1)):
+        Ag.update()
+    # then drop the zeros that was initialized with
+    for key in list(Ag.history.keys()):
+        Ag.history[key] = Ag.history[key][1:]
+    # procede with actual updates for entire session
+    for i in tqdm(range(1, int(T)), leave=True, position=0, desc='Stepping through updates'):
+        Ag.update()
+        # GC.update()
+        BVC.update()
+
+    ratinabox.stylize_plots()
+    fig1, ax1 = Ag.plot_trajectory(color="changing", pointsize=2.5)
+    plt.show()
+    fig2, ax2 = BVC.plot_rate_map(chosen_neurons="10", method="history")
+    plt.show()
+    # fig, ax = GC.plot_rate_map(chosen_neurons="4", method="history")
+    # fig, ax = BVC.plot_rate_timeseries(t_start=150, t_end=300, chosen_neurons="10", spikes=False)
+    # fig, ax = GC.plot_rate_timeseries(t_start=150, t_end=300, chosen_neurons="10", spikes=False)
+    return fig1, fig2
