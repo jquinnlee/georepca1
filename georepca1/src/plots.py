@@ -508,10 +508,10 @@ def plot_heuristic_model_fits(euc_fit, euc_se, bound_fit, bound_se, traj_fit, tr
     return fig
 
 
-def plot_riab_example(animal="QLAK-CA1-08", p=r'/Users/jquinnlee/Desktop/georep_hipp', shape="square",
-                      const=0.08, scalar=12):
+def plot_riab_example(animal, p, shape="square", const=0.08, scalar=12):
     fps = 30
-    behav_dict = joblib.load(os.path.join(p, 'behav_dict'))[animal]
+    p_data = os.path.join(p, "data")
+    behav_dict = joblib.load(os.path.join(p_data, 'behav_dict'))[animal]
     env_idx = np.amin(np.where(behav_dict["envs"] == shape)[0])
     position = behav_dict["position"][env_idx]
     position = 75 * 0.01 * (position / position.max())

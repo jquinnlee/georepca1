@@ -1783,7 +1783,7 @@ def get_model_maps(animals, p, feature_types=['BVC2PC'], n_bins=15, compute_rsm=
     # simply adapted to dictionary specific fields of simulation data
     behav_dict = joblib.load(os.path.join(p, 'behav_dict'))
     for animal in animals:
-        p_models = os.path.join(p, "riab_agent_bases")
+        p_models = os.path.join(p, "results", "riab")
         os.chdir(p_models)
         # define number of bins along x and y axis in rate maps
         for feature_type in feature_types:
@@ -1874,20 +1874,20 @@ def get_gc2pc_maps(animals, p, pc_receptive_fields, threshold=True, n_pc = 200, 
         pc_rate_maps["smoothed"] = pc_rate_maps["smoothed"].transpose(2, 3, 1, 0)
         pc_rate_maps["unsmoothed"] = pc_rate_maps["unsmoothed"].transpose(2, 3, 1, 0)
         if threshold:
-            joblib.dump(pc_rate_maps, os.path.join(p, "data", "riab_agent_bases", f"{animal}_GC2PC_th_maps"))
+            joblib.dump(pc_rate_maps, os.path.join(p, "results", "riab", f"{animal}_GC2PC_th_maps"))
 
         else:
-            joblib.dump(pc_rate_maps, os.path.join(p, "data", "riab_agent_bases", f"{animal}_GC2PC_maps"))
+            joblib.dump(pc_rate_maps, os.path.join(p, "results", "riab", f"{animal}_GC2PC_maps"))
 
         if compute_rsm:
             rsm_model, rsm_labels_model, cell_idx_model = get_cell_rsm_partitioned(pc_rate_maps)
             rsm_dict_model = {'RSM': rsm_model, 'd_labels': rsm_labels_model[:, 0], 'p_labels': rsm_labels_model[:, 1],
                               'cell_idx': cell_idx_model, 'envs': behav_dict[animal]['envs']}
             if threshold:
-                joblib.dump(rsm_dict_model, os.path.join(p, "data", "riab_agent_bases",
+                joblib.dump(rsm_dict_model, os.path.join(p, "results", "riab",
                                                          f'{animal}_model_GC2PC_th_rsm_partitioned_cellwise'))
             else:
-                joblib.dump(rsm_dict_model, os.path.join(p, "data", "riab_agent_bases",
+                joblib.dump(rsm_dict_model, os.path.join(p, "results", "riab",
                                                          f'{animal}_model_GC2PC_rsm_partitioned_cellwise'))
 
 
