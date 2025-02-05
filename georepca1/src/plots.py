@@ -576,3 +576,41 @@ def plot_riab_example(animal, p, shape="square", const=0.08, scalar=12):
     # fig, ax = BVC.plot_rate_timeseries(t_start=150, t_end=300, chosen_neurons="10", spikes=False)
     # fig, ax = GC.plot_rate_timeseries(t_start=150, t_end=300, chosen_neurons="10", spikes=False)
     return fig1, fig2
+
+
+def plot_bvc_beta_distribution(vals):
+    # draw samples from a beta distribution to illustrate tuning distance manipulation
+    n_samples = int(1e4)
+    sns.set(style="dark", font_scale=2., palette="cool")
+    fig1 = plt.figure(figsize=(6, 6))
+    ax = plt.subplot()
+    labels = []
+    for b in vals:
+        samples = np.random.beta(a=1., b=b, size=n_samples)
+        sns.kdeplot(samples, cumulative=True, linewidth=4.)
+        labels.append(f"$\\alpha$ = 1.0, $\\beta$ = {b}")
+    ax.set_ylim([-.1, 1.1])
+    ax.set_xlim([-.1, 1.1])
+    ax.set_ylabel("Density", weight="bold")
+    ax.set_xlabel("BVC tuning distance ($m$)", weight="bold")
+    plt.setp(ax.spines.values(), linewidth=4., color="k")
+    plt.tight_layout()
+    plt.show()
+
+    sns.set(style="dark", font_scale=2., palette="cool")
+    fig2 = plt.figure(figsize=(6, 6))
+    ax = plt.subplot()
+    labels = []
+    for a in vals:
+        samples = np.random.beta(a=a, b=1., size=n_samples)
+        sns.kdeplot(samples, cumulative=True, linewidth=4.)
+        labels.append(f"$\\alpha$ = {a}, $\\beta$ = 1.")
+    ax.set_ylim([-.1, 1.1])
+    ax.set_xlim([-.1, 1.1])
+    ax.set_ylabel("Density", weight="bold")
+    ax.set_xlabel("BVC tuning distance ($m$)", weight="bold")
+    plt.setp(ax.spines.values(), linewidth=4., color="k")
+    plt.tight_layout()
+    plt.show()
+    return fig1, fig2
+
