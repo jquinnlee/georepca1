@@ -614,3 +614,28 @@ def plot_bvc_beta_distribution(vals):
     plt.show()
     return fig1, fig2
 
+
+def plot_stream_vector_fields(group_vector_fields, group_vector_fields_average):
+    Y, X = np.mgrid[0:group_vector_fields_average.shape[1], 0:group_vector_fields_average.shape[0]]
+    # fig = plt.figure(figsize=(6, 6))
+    # # plot all geometries
+    # for i, env_idx in enumerate(range(group_vector_fields_average.shape[-1])):
+        # ax = plt.subplot(3, 3, i+1)
+    # plot examples from paper
+    fig = plt.figure(figsize=(6, 4.25))
+    for i, env_idx in enumerate(np.array([0, 1, 6, 3, 4, 5])):
+        U = group_vector_fields_average[:, :, 0, env_idx]
+        V = group_vector_fields_average[:, :, 1, env_idx]
+        ax = plt.subplot(2, 3, i+1)
+        # normalize colors to 7 spatial bins as max (35 cm is max color)
+        ax.streamplot(X, Y, U.T, V.T, density=1.5, norm=Normalize(0, 7),
+                      arrowsize=.5, linewidth=1., cmap="inferno",
+                      zorder=1, color=np.linalg.norm(np.dstack((U.T, V.T)), axis=-1))
+        ax.imshow(group_vector_fields[list(group_vector_fields.keys())[0]]["shape"][:, :, env_idx].T, cmap="gray",
+                  alpha=1., zorder=0)
+        ax.set_aspect("equal")
+        ax.set_yticks([])
+        ax.set_xticks([])
+        plt.setp(ax.spines.values(), linewidth=4., color="k")
+    plt.tight_layout()
+    return fig

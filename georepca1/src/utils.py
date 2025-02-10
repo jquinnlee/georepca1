@@ -55,7 +55,7 @@ import matplotlib
 import time
 from scipy.ndimage import gaussian_filter
 import torch
-
+from matplotlib.colors import Normalize
 
 
 def load_dat(animal, p, to_convert=["envs", "position", "trace"], format="MATLAB"):
@@ -421,6 +421,237 @@ def clean_rate_maps(maps, envs):
             maps['unsmoothed'][:, :, f, d][np.where(~map_mask)] = np.nan
     return maps
 
+
+
+def get_masked_maps(animal, dat, method="first_square"):
+    """
+    get_masked_maps is a control analysis that will create rate maps for all recorded sessions using original maps
+    but the shapes for each sequence will be generated from the weighted average of squares (based on temporal distance)
+    and masking each shape for the partitions and cells that have been occluded or not registered, respectively.
+    :param animal: animal ID, as a string (e.g. 'QLAK-CA1-08')
+    :return: masked maps as dictionary with the field 'smoothed' containing the output
+    """
+    n_days = dat[animal]['envs'].shape[0]
+    s_days = np.where(dat[animal]['envs'] == 'square')[0]
+    s_maps = dat[animal]['maps']['smoothed'][:, :, :, s_days]
+    masked_maps = np.zeros_like(dat[animal]['maps']['smoothed']).transpose(3, 0, 1, 2) * np.nan
+
+    if method=="first_square":
+        s = 0
+        cell_mask = np.zeros(s_maps.shape[2]).astype(bool)
+        for d in range(n_days):
+            mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
+            # check if it is a square day
+            if np.any(d == s_days):
+                # iterate across all cells
+                for c in range(s_maps.shape[2]):
+                    # if cell is registered on that day (non nans) and cell mask is not already filled
+                    if np.any(~mask[:, :, c]) and ~cell_mask[c]:
+                        masked_maps[d:, :, :, c] = deepcopy(s_maps[:, :, c, s])[np.newaxis].repeat(n_days-d, axis=0)
+                        cell_mask[c] = True
+                s+=1
+            masked_maps[d][mask] = np.nan
+
+    elif method=='weighted_average':
+        s = 0
+        for d in range(n_days):
+            # if day is not first square of sequence
+            if np.all(d != s_days):
+                mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
+                s_maps1, s_maps2 = s_maps[:, :, :, s-1], s_maps[:, :, :, s]
+                # calculate the distance from nearest square day
+                w1 = 1 - np.abs((d - s_days[s-1])/(s_days[s-1] - s_days[s]))
+                w2 = 1 - np.abs((d - s_days[s])/(s_days[s-1] - s_days[s]))
+                # assign maps to be the weighted average of the two squares (based on distance in time)
+                masked_maps[d] = (w1 * s_maps1 + w2 * s_maps2) / 2
+                # nan out occluded partitions
+                masked_maps[d][mask] = np.nan
+            else:
+                masked_maps[d] = s_maps[:, :, :, s]
+                s += 1
+
+    # if not using weighted average method, then randomly choose maps from first or second square day of sequence
+    elif method == 'random_choice':
+        s = 0
+        for d in range(n_days):
+            # if day is not first square of sequence
+            if np.all(d != s_days):
+                mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
+                for c in range(s_maps.shape[2]):
+                    # random choice between square reference days for each cell
+                    masked_maps[d, :, :, c] = s_maps[:, :, c, np.random.choice((s-1, s))]
+                    # nan out occluded partitions
+                    masked_maps[d][mask] = np.nan
+            else:
+                masked_maps[d] = s_maps[:, :, :, s]
+                s += 1
+
+    else:
+        s = 0
+        for d in range(n_days):
+            # if day is not first square of sequence
+            if np.all(d != s_days):
+                mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
+                masked_maps[d] = s_maps[:, :, :, s-1]
+            else:
+                masked_maps[d] = s_maps[:, :, :, s]
+                s += 1
+
+    masked_maps = masked_maps.transpose(1, 2, 3, 0)
+    masked_maps = {'smoothed': masked_maps}
+
+    return masked_maps
+
+def get_pv_vector_fields(animal, p, stable_simulation=False, place_cells=None):
+    # Calculate population vector similarities within sequence relative to first square day
+    dat = load_dat(animal, p, format="joblib")
+    envs = dat[animal]['envs'].squeeze()
+    if stable_simulation:
+        maps = get_masked_maps(animal, dat)["smoothed"]
+    else:
+        maps = dat[animal]['maps']['smoothed']
+    n_bins, n_cells, n_days, n_envs = maps.shape[0], maps.shape[2], maps.shape[3], np.unique(envs).shape[0]
+
+    fit_days = np.vstack((np.where(envs == 'square')[0][:-1], np.where(envs == 'square')[0][1:])).T
+    pv_vector_fields_envs = {'average': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
+                             'std': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
+                             'shape': np.zeros([n_bins, n_bins, n_envs - 1]),
+                             'pvmatrix': np.zeros([fit_days.shape[0], n_bins**2, n_bins**2, n_envs - 1])}
+    # pv matrix will be the pv cross-correlation
+
+    for seq, (f1_idx, f2_idx) in enumerate(fit_days):
+        for p_idx in np.arange(f1_idx, f2_idx)[1:]:
+            f1_maps, f2_maps, p_maps = maps[:, :, :, f1_idx].reshape(n_bins**2, n_cells), \
+                                      maps[:, :, :, f2_idx].reshape(n_bins**2, n_cells), \
+                                      maps[:, :, :, p_idx].reshape(n_bins**2, n_cells)
+            # if using only split-half reliable cells, nan out non-reliable cells from flattened maps
+            if np.any(place_cells):
+                f1_maps[:, ~place_cells[:, f1_idx]] = np.nan
+                f2_maps[:, ~place_cells[:, f2_idx]] = np.nan
+                p_maps[:, ~place_cells[:, p_idx]] = np.nan
+
+            pv_corrs = np.zeros([n_bins**2, n_bins**2, len([f1_maps, f2_maps])])
+            for f, f_maps in enumerate([f1_maps, f2_maps]):
+                nan_mask = np.where(np.logical_and(np.any(~np.isnan(f_maps), axis=0), np.any(~np.isnan(p_maps), axis=0)))[0]
+                pv_corrs[:, :, f] = np.corrcoef(f_maps[:, nan_mask], p_maps[:, nan_mask])[:n_bins**2, n_bins**2:]
+            pv_corrs = np.nanmean(pv_corrs, axis=2)
+            pv_vector_fields_envs["pvmatrix"][seq, :, :, p_idx - f1_idx - 1] = pv_corrs
+
+            # initialize two flattened maps with zeros
+            map1, map2 = np.zeros(n_bins**2), np.zeros(n_bins**2)
+            pv_vector_fields = np.zeros([n_bins, n_bins, 2]) * np.nan
+            for p, pv in enumerate(pv_corrs):
+                # add one for the current index of session s1
+                map1[p] += 1
+                idx = np.argwhere(map1.reshape(n_bins, n_bins))[0]
+                # add one for the max pv corr idx of s1 v s2
+                if np.any(~np.isnan(pv)):
+                    map2[np.argwhere(pv == np.nanmax(pv))[0][0]] += 1
+                    pv_vector_fields[idx[0], idx[1]][:] = np.argwhere(map2.reshape(n_bins, n_bins))[0] - \
+                                                          np.argwhere(map1.reshape(n_bins, n_bins))[0]
+                # zero the maps
+                map1 *= 0
+                map2 *= 0
+            for key in list(pv_vector_fields_envs.keys())[:-2]:
+                pv_vector_fields_envs[key][:, :, :, np.where(envs[p_idx] == envs[1:np.unique(envs).shape[0]])[0][0], seq] = \
+                    pv_vector_fields
+    pv_vector_fields_envs['average'], pv_vector_fields_envs['std'] = np.nanmean(pv_vector_fields_envs['average'], -1),\
+                                                                     np.nanstd(pv_vector_fields_envs['std'], -1)
+    for e, env in enumerate(envs[1:n_envs]):
+        pv_vector_fields_envs['shape'][:, :, e] = ~np.isnan(np.nanmean(np.nanmean(maps[:, :, :, np.where(envs == env)], 2),
+                                                                       -1).squeeze())
+    pv_vector_fields_envs['envs'] = envs
+    del dat
+    return pv_vector_fields_envs
+
+
+def get_pv_vector_fields_model(animal, p, feature_type):
+    p_models = os.path.join(p, "results", "riab")
+    # Calculate population vector similarities within sequence relative to first square day
+    envs = joblib.load(os.path.join(p, "data", 'behav_dict'))[animal]['envs']
+    # maps = joblib.load(os.path.join(p_models, animal, "maps", f"{animal}_{feature_type}_maps"))["smoothed"]
+    maps = joblib.load(os.path.join(p_models, f"{animal}_{feature_type}_maps"))["smoothed"]
+    n_bins, n_cells, n_days, n_envs = maps.shape[0], maps.shape[2], maps.shape[3], np.unique(envs).shape[0]
+
+    fit_days = np.vstack((np.where(envs == 'square')[0][:-1], np.where(envs == 'square')[0][1:])).T
+    pv_vector_fields_envs = {'average': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
+                             'std': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
+                             'shape': np.zeros([n_bins, n_bins, n_envs - 1]),
+                             'pvmatrix': np.zeros([fit_days.shape[0], n_bins**2, n_bins**2, n_envs - 1])}
+    for seq, (f1_idx, f2_idx) in enumerate(fit_days):
+        for p_idx in np.arange(f1_idx, f2_idx)[1:]:
+            f1_maps, f2_maps, p_maps = maps[:, :, :, f1_idx].reshape(n_bins**2, n_cells), \
+                                      maps[:, :, :, f2_idx].reshape(n_bins**2, n_cells), \
+                                      maps[:, :, :, p_idx].reshape(n_bins**2, n_cells)
+            pv_corrs = np.zeros([n_bins**2, n_bins**2, len([f1_maps, f2_maps])])
+            for f, f_maps in enumerate([f1_maps, f2_maps]):
+                nan_mask = np.where(np.logical_and(np.any(~np.isnan(f_maps), axis=0), np.any(~np.isnan(p_maps), axis=0)))[0]
+                pv_corrs[:, :, f] = np.corrcoef(f_maps[:, nan_mask], p_maps[:, nan_mask])[:n_bins**2, n_bins**2:]
+            pv_corrs = np.nanmean(pv_corrs, axis=2)
+            # also return the complete PV vector cross correlation
+            pv_vector_fields_envs["pvmatrix"][seq, :, :, p_idx - f1_idx - 1] = pv_corrs
+
+            # initialize two flattened maps with zeros
+            map1, map2 = np.zeros(n_bins**2), np.zeros(n_bins**2)
+            pv_vector_fields = np.zeros([n_bins, n_bins, 2]) * np.nan
+            for p, pv in enumerate(pv_corrs):
+                # add one for the current index of session s1
+                map1[p] += 1
+                idx = np.argwhere(map1.reshape(n_bins, n_bins))[0]
+                # add one for the max pv corr idx of s1 v s2
+                if np.any(~np.isnan(pv)):
+                    map2[np.argwhere(pv == np.nanmax(pv))[0][0]] += 1
+                    pv_vector_fields[idx[0], idx[1]][:] = np.argwhere(map2.reshape(n_bins, n_bins))[0] - \
+                                                          np.argwhere(map1.reshape(n_bins, n_bins))[0]
+                # zero the maps
+                map1 *= 0
+                map2 *= 0
+            for key in list(pv_vector_fields_envs.keys())[:-2]:
+                pv_vector_fields_envs[key][:, :, :, np.where(envs[p_idx] == envs[1:np.unique(envs).shape[0]])[0][0], seq] = \
+                    pv_vector_fields
+    pv_vector_fields_envs['average'], pv_vector_fields_envs['std'] = np.nanmean(pv_vector_fields_envs['average'], -1),\
+                                                                     np.nanstd(pv_vector_fields_envs['std'], -1)
+    for e, env in enumerate(envs[1:n_envs]):
+        pv_vector_fields_envs['shape'][:, :, e] = ~np.isnan(np.nanmean(np.nanmean(maps[:, :, :, np.where(envs == env)], 2),
+                                                                       -1).squeeze()[:, :, 0])
+    pv_vector_fields_envs['envs'] = envs
+    return pv_vector_fields_envs
+
+
+def get_vector_fields_animals(animals, p, stable_simulation=False, feature_type=False,
+                              place_cells_only=False, alpha=0.01):
+    # Iterate through all animals rate maps and determine population vector correlation fields to build dict
+    pv_vector_fields_animals = {}
+    for animal in animals:
+        if feature_type:
+            pv_vector_fields_animals[animal] = get_pv_vector_fields_model(animal, p, feature_type)
+        else:
+            if place_cells_only:
+                shr = joblib.load(os.path.join(p, "results", f"{animal}_SHR"))
+                pv_vector_fields_animals[animal] = get_pv_vector_fields(animal, p, place_cells=shr < alpha)
+            else:
+                pv_vector_fields_animals[animal] = get_pv_vector_fields(animal, p, stable_simulation)
+    # Re-order field maps to match the ordering of first animal
+    for a, animal in enumerate(animals):
+        envs = pv_vector_fields_animals[animal]['envs']
+        n_envs = np.unique(envs).shape[0]
+        if a == 0:
+            cannon_order = envs[1:n_envs]
+        reorder_idx = np.zeros(n_envs-1).astype(int)
+        for e, env in enumerate(cannon_order):
+            reorder_idx[e] = np.where(envs[1:n_envs] == env)[0]
+        for key in list(pv_vector_fields_animals[animal].keys())[:-1]:
+            pv_vector_fields_animals[animal][key] = pv_vector_fields_animals[animal][key].T[reorder_idx].T
+        pv_vector_fields_animals[animal]['envs'] = pv_vector_fields_animals[animal]['envs'][1:][reorder_idx]
+    # Calculate averages and standard deviation across all animals, all sequences
+    average_vector_fields = np.zeros(np.hstack((np.array(len(animals)),
+                                                np.array(pv_vector_fields_animals[animal]['average'].shape))))
+    std_vector_fields = np.zeros(np.hstack((np.array(len(animals)),
+                                            np.array(pv_vector_fields_animals[animal]['std'].shape))))
+    for a, animal in enumerate(animals):
+        average_vector_fields[a] = pv_vector_fields_animals[animal]['average']
+        std_vector_fields[a] = pv_vector_fields_animals[animal]['std']
+    return pv_vector_fields_animals, average_vector_fields.mean(0), std_vector_fields.mean(0)
 
 ########################################################################################################################
 # Representational similarity functions for RSM construction
@@ -1781,7 +2012,7 @@ def load_bases(animal, p, cell_types=["GC", "BVC", "PC"]):
 def get_model_maps(animals, p, feature_types=['BVC2PC'], n_bins=15, compute_rsm=False):
     # wrapper function for rate map generation from riab model simulation
     # simply adapted to dictionary specific fields of simulation data
-    behav_dict = joblib.load(os.path.join(p, 'behav_dict'))
+    behav_dict = joblib.load(os.path.join(p, "data", 'behav_dict'))
     for animal in animals:
         p_models = os.path.join(p, "results", "riab")
         os.chdir(p_models)
@@ -1825,10 +2056,10 @@ def get_solstad_pc(n_grids=50, gridscale=(0.28, 0.73), sigma=.12, threshold=Fals
                                    "gridscale": gridscale,
                                    "gridscale_distribution": "logarithmic",
                                    "phase_offset": (0., 0.),
-                                   "shift_origin": (shift_x, shift_y),
                                    "min_fr": 0,
                                    "max_fr": 1,
                                    "name": "GridCells"})
+        GC.phase_offsets = 2 * np.pi * np.array([shift_x, shift_y]) / GC.gridscales[:, None]
         PC = FeedForwardLayer(Ag, params={"n": 1,
                                           "features": GC,
                                           "input_layers": [GC],
@@ -2106,19 +2337,15 @@ def get_bt_gc2pc_maps(animals, p, n_pc=500, threshold=False, compute_rsm=False):
     print("Done.")
 
 
-def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False, condition=False):
+def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False):
     p_models = os.path.join(p, "results", "riab")
+    p_data = os.path.join(p, "data")
     start_time = time.time()
     print("Computing PC rate maps from model BVC rate maps")
-    envs = joblib.load(os.path.join(p, f"{animal}_rate_maps"))["envs"]
-    s_path = os.path.join(p_models)
+    behav_dict = joblib.load(os.path.join(p_data, "behav_dict"))
+    envs = behav_dict[animal]["envs"]
     os.chdir(p_models)
-    if glob(os.path.join(p_models, "rsm")) == []:
-        os.mkdir("rsm")
-    if condition:
-        doFitMaps = joblib.load(os.path.join(p_models, f"{animal}_BVC_{condition}_maps"))["smoothed"]
-    else:
-        doFitMaps = joblib.load(os.path.join(p_models, f"{animal}_BVC_maps"))["smoothed"]
+    doFitMaps = joblib.load(os.path.join(p_models, f"{animal}_BVC_maps"))["smoothed"]
     placeThreshold = 0.2
     # min and max number of BVC inputs to a place cell
     combAmt = (2, 16)
@@ -2139,7 +2366,7 @@ def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False, condition=False):
                         continue
                     # generate random connections to all BVCs
                     inds = np.random.permutation(nBVCs)
-                    # Then grab the connections constrained with number of inputs drawn from truncated poisson distribution
+                    # Then grab the connections constrained with number of inputs drawn from truncated poisson distrib.
                     m = doFitMaps[:, :, inds[:nCons], si]
                     # normalize the rate maps
                     m /= np.nanmax(m.reshape(-1, nCons), axis=0)
@@ -2164,27 +2391,21 @@ def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False, condition=False):
             placeMaps[:, :, k, si] = tmp
 
     out_maps = {"smoothed": placeMaps}
-    if condition:
-        joblib.dump(out_maps, os.path.join(p_models, f"{animal}_BVC2PC_{condition}_maps"))
-    else:
-        joblib.dump(out_maps, os.path.join(p_models, f"{animal}_BVC2PC_maps"))
+    joblib.dump(out_maps, os.path.join(p_models, f"{animal}_BVC2PC_maps"))
 
     if compute_rsm:
-        if condition:
-            models_maps = joblib.load(os.path.join(p_models, f"{animal}_BVC2PC_{condition}_maps"))
-        else:
-            models_maps = joblib.load(os.path.join(p_models, f"{animal}_BVC2PC_maps"))
+        models_maps = joblib.load(os.path.join(p_models, f"{animal}_BVC2PC_maps"))
         rsm_model, rsm_labels_model, cell_idx_model = get_cell_rsm_partitioned(models_maps)
         rsm_dict_model = {'RSM': rsm_model, 'd_labels': rsm_labels_model[:, 0], 'p_labels': rsm_labels_model[:, 1],
                           'cell_idx': cell_idx_model, 'envs': envs}
-        joblib.dump(rsm_dict_model, os.path.join(p_models, "rsm",
-                                                 f"{animal}_BVC2PC_{condition}_rsm_partitioned_cellwise"))
+        joblib.dump(rsm_dict_model, os.path.join(p_models,
+                                                 f"{animal}_model_BVC2PC_rsm_partitioned_cellwise"))
 
     print("--- %s seconds ---" % (time.time() - start_time))
 
 
 def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.)*10**(-3),
-                      norm_within_day=True, threshold=0.8, timestep=1, n_pretrain=3, use_precomps=False):
+                      norm_within_day=True, threshold=0.8, timestep=1, n_pretrain=3):
     # time the process
     start_time = time.time()
     p_models = os.path.join(p, "results", "riab")
@@ -2258,8 +2479,8 @@ def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.
         # clear the basis set for the animal
         del basis_set
         # save the sf model result
-        joblib.dump(sf_simulation,
-                    f'{animal}_{basis}2SF_{sr_gamma:.5f}gamma_{sr_alpha:.5f}alpha_simulation')
+        joblib.dump(sf_simulation, os.path.join(p_models,
+                    f'{animal}_{basis}2SF_{sr_gamma:.5f}gamma_{sr_alpha:.5f}alpha_simulation'))
         del sf_simulation
     print("--- %s seconds ---" % (time.time() - start_time))
 
