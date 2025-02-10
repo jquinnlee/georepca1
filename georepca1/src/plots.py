@@ -639,3 +639,27 @@ def plot_stream_vector_fields(group_vector_fields, group_vector_fields_average):
         plt.setp(ax.spines.values(), linewidth=4., color="k")
     plt.tight_layout()
     return fig
+
+
+def plot_model2ca1_similarities(df_agg_bootstrap, noise_margin_agg, feature_names):
+    sns.set(style='dark', font_scale=2.)
+    fig = plt.figure(figsize=(6, 6))
+    ax = plt.subplot()
+    bp = sns.barplot(data=df_agg_bootstrap, x=df_agg_bootstrap["Model"], y=df_agg_bootstrap["Fit"], width=.5,
+                     saturation=1., palette='cool', edgecolor='k', linewidth=4, errcolor='k', errwidth=0.)
+    for pt, patch in enumerate(bp.patches):
+        plt.errorbar(x=patch.get_x() + .25, y=patch.get_height(), yerr=df_agg_bootstrap['SE'].iloc[pt], c='k',
+                     linewidth=4.)
+    ax.axhline(np.mean(noise_margin_agg[:, 0], axis=0), c='blue', linewidth=4.0, alpha=.6)
+    ax.axhline(np.mean(noise_margin_agg[:, 1], axis=0), c='blue', linewidth=4.0, alpha=.6)
+    ax.set_ylim([.0, .75])
+    ax.set_ylabel("CA1 Fit ($Tau$)", weight='bold')
+    ax.axhline(0.0, c='k', linewidth=5.)
+    ax.set_xticks(np.arange(len(feature_names)))
+    ax.set_xticklabels(feature_names, weight='bold', fontsize=26, rotation=90)
+    ax.set_xlabel("")
+    plt.setp(ax.spines.values(), color='k', linewidth=5)
+    plt.tight_layout()
+    plt.show()
+    return fig
+

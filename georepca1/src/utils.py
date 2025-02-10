@@ -58,7 +58,7 @@ import torch
 from matplotlib.colors import Normalize
 
 
-def load_dat(animal, p, to_convert=["envs", "position", "trace"], format="MATLAB"):
+def load_dat(animal, p, to_convert=["envs", "position", "trace"], format="joblib"):
     """
     Load dataset from target animal (matlab file), convert environment labels, position, and trace data
     to numpy arrays. Can load original MATLAB files, or saved joblib file with converted fields
@@ -66,9 +66,9 @@ def load_dat(animal, p, to_convert=["envs", "position", "trace"], format="MATLAB
     :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
     :param to_convert: fields to convert to numpy arrays
     :param format: format of data file to be loaded, either "MATLAB" or "joblib"
-    :return: dataset in nested dictionary under animal key
+    :return: dataset in nested dictionary with animal ID as first key
     """
-    # Define path to datasets (should be added to "data" folder after downloading)
+    # Define path to datasets (original should be added to "data" folder after downloading)
     p_data = os.path.join(p, "data")
     print(f'Loading preprocessed data for animal {animal}')
     # if file format is .mat (MATLAB), then load with mat73.loadmat and convert necessary fields to numpy arrays
@@ -86,10 +86,11 @@ def load_dat(animal, p, to_convert=["envs", "position", "trace"], format="MATLAB
 
 def save_dat(dat, animal, p):
     """
-    :param dat: 
-    :param animal: 
-    :param p: 
-    :return: 
+    Save dataset for animal to desired path
+    :param dat: dataset as generated with load_dat
+    :param animal: animal ID (e.g., "QLAK-CA1-08")
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :return: None
     """
     p_data = os.path.join(p, "data")
     joblib.dump(dat, os.path.join(p_data, animal))
@@ -98,6 +99,8 @@ def save_dat(dat, animal, p):
 def mat2joblib(animal, p):
     """
     Load original MATLAB file and save joblib file with converted fields
+    :param dat: dataset as generated with load_dat
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
     """
     dat = load_dat(animal, p)
     save_dat(dat, animal, p)
@@ -116,6 +119,7 @@ def trace_sfps(SFPs):
         for d in range(n_days):
             # create contours of SFPs by detecting changes in values at edge of solid object in SFPs matrices
             SFPs_bin = SFPs[:, :, c, d] > 1e-3
+            # pop result for corresponding cell into numpy array
             SFPs_traced[:, :, c, d] = (np.vstack((np.zeros(SFPs_bin.shape[0])[np.newaxis], np.diff(SFPs_bin, axis=0))) +
                                        np.hstack((np.zeros(SFPs_bin.shape[1])[np.newaxis].T,
                                                   np.diff(SFPs_bin, axis=1)))).astype(bool)
@@ -125,9 +129,9 @@ def trace_sfps(SFPs):
 def generate_behav_dict(animals, p, format="joblib"):
     """
     Generate and save dictionary containing behavioral data and environment information for all animals
-    Purpose is to have a smaller, easily loadable file with such data
+    Dataset is smaller, easily loadable file
     :param animals: list of animal IDs to load
-    :param p: path to main project directory
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
     :param format: str file format to load original, whole dataset per animal from ("joblib" or "MATLAB")
     :return: None
     """
@@ -144,12 +148,17 @@ def generate_behav_dict(animals, p, format="joblib"):
 
 def get_environment_label(env_name, flipud=False):
     '''
-    get_environment label will return a custom maker from environment name as input that can be used for plotting
+    Create polygon marker with coordinates from environment vertices for plotting
+    :param env_name: name of environment as string. Options are: "square", "o", "t", "u", "rectangle", "+", "i", "l",
+    "bit donut", or "glenn"
+    :arg flipud: option to vertically flip the polygon
+    :return: matplotlib path for plotting, and polygon vertices (poly variable)
     '''
     codes = False
     # First draw vertices that will create the shape of the environment based on input name (env names in weirdGeos dat)
     if env_name == 'square':
         polys = np.array([[0, 0], [0, 30], [30, 30], [30, 0], [0, 0]])-15
+    # o is a special case as it is only environment with a hole
     elif env_name == 'o':
         polys_outside = np.array([[0, 0], [0, 30], [30, 30], [30, 0], [0, 0]]) - 15
         polys_inside = np.array([[10, 10], [10, 21], [21, 21], [21, 10], [10, 10]]) - 15
@@ -203,7 +212,13 @@ def get_environment_label(env_name, flipud=False):
 
 
 def get_env_mat(env):
-    '''return the 3x3 matrix for the corresponding string environment name'''
+    '''
+    Get binary 3x3 matrix for the corresponding string environment name as floats, with 0 indicating omitted partitions.
+    If invalid environment name is given will return 3x3 of nans.
+    :param env: environment name as string. Options are: "square", "o", "t", "u", "rectangle", "+", "i", "l",
+    "bit donut", or "glenn"
+    :return: binary 3x3 matrix of the environment
+    '''
     if env == 'square':
         return np.array([[1, 1, 1],
                          [1, 1, 1],
@@ -253,6 +268,16 @@ def get_env_mat(env):
 
 
 def get_transition_matrix(behav, maps, step_size=15, n_bins=15, buffer=1e-5):
+    """
+    Generate a transition matrix between states (spatial bins) in environment using animal behavior. Matrix will contain
+    transition probabilities for each pair of states (bins) in the environment.
+    :param behav: x-y position of animal in environment from dataset
+    :param maps: rate maps used for rounding discrete behavioral states
+    :param step_size: step in number of frames recorded at 30Hz recording to iterate across (e.g., every 15 steps = 2Hz)
+    :param n_bins: number of spatial bins in x and y dimensions of the environment
+    :param buffer: buffer size used for rounding discrete behavioral states
+    :return: transition matrix as probabilities, and total counts of transitions between states
+    """
     # make a deepcopy of behav and trace data as to not change original inputs
     behav = deepcopy(behav)
     # bin down behavioural data
@@ -261,7 +286,7 @@ def get_transition_matrix(behav, maps, step_size=15, n_bins=15, buffer=1e-5):
     behav /= bin_down
     # grab the number of days to iterate across, and initialize some variables to return and use as function params
     n_days = behav.shape[2]
-    # create template maps for all days to find nearest x-y bins for actual behaviour
+    # create template maps for all days to round x-y position from behaviour
     temp_maps = np.nansum(maps, axis=2).astype(bool)
     # initialize transition matrix
     transition_mat = np.zeros([temp_maps.shape[0] * temp_maps.shape[1],
@@ -278,114 +303,129 @@ def get_transition_matrix(behav, maps, step_size=15, n_bins=15, buffer=1e-5):
         # convert into probabilities that sum to one across column axis
         transition_mat_counts[:, :, d] = deepcopy(transition_mat[:, :, d])
         transition_mat[:, :, d] = (transition_mat[:, :, d].T / transition_mat[:, :, d].T.sum(axis=0)).T
+    # return transition probabilities and count number
     return np.nan_to_num(transition_mat), transition_mat_counts
 
 
 ########################################################################################################################
 # Rate map generation and split-half reliability measures
 def get_rate_maps(position, trace, n_bins=15, fps=30, buffer=1e-5, filter_size=1.5):
+    """
+    Create rate maps from animal position and calcium trace data (single session).
+    :param position: x-y position of the animal, shape n frames (row) by n dimensions (2 columns)
+    :param trace: calcium trace data, shape n frames (row) by n cells
+    :param n_bins: number of spatial bins in x- and y-dimensions
+    :param fps: frames per second of recording
+    :param buffer: buffer size for rounding binned position data
+    :param filter_size: sigma size (bin number) for smoothing event rate maps
+    :return: event rate maps, occupancy map (proportion of time in each bin), and average event rate for all cells
+    """
     # time is row axis for position and trace data
     # First determine the length of the recording and number of neurons
     len_recording = trace.shape[0]
     n_cells = trace.shape[1]
-
     # Initialize rate maps and count map (which will count the number of times each bin is visited)
     rate_maps = np.zeros([n_cells, n_bins, n_bins])
     count_map = np.zeros([n_bins, n_bins])
-
     # Create a binned version of the position data with integer division
     position_binned = (position // ((np.nanmax(position, axis=0) + buffer) / n_bins)).astype(int)
-
     # Iterate through binned position data and add value of each trace
     # to rate map and a one to the same position on the count map
     for t, (x, y) in enumerate(position_binned):
         rate_maps[:, x, y] += trace[t, :]
         count_map[x, y] += 1
-
     nan_map = np.zeros_like(count_map) * np.nan
     nan_map[np.where(count_map)[0], np.where(count_map)[1]] = 1.
-
     if filter_size:
         rate_maps = gaussian_filter1d(gaussian_filter1d(rate_maps, sigma=filter_size, axis=1),
                                       sigma=filter_size, axis=2)
         count_map = gaussian_filter1d(gaussian_filter1d(count_map, sigma=filter_size, axis=0),
                                       sigma=filter_size, axis=1)
-
     # To determine the firing rate of neurons in each bin, divide by the number of
     # times the animal was in that location and multiply by the frames per second
     for cell in range(n_cells):
         rate_maps[cell] = (rate_maps[cell] / count_map) * fps * nan_map
-
     # Also create a probability map of dwell times in each bin to return
     occupancy_map = count_map / len_recording
-
-    average_firing = (np.sum(trace, axis=0) / trace.shape[0]) * fps
-
-    return rate_maps, occupancy_map, average_firing
+    # get average event rate for all cells
+    average_events = (np.sum(trace, axis=0) / trace.shape[0]) * fps
+    return rate_maps, occupancy_map, average_events
 
 
 def get_split_half(position, trace):
-
+    """
+    Calculate split-half reliability (Pearson correlation) from rate maps constructed with position and calcium traces.
+    :param position: x-y position of the animal, shape n frames (row) by n dimensions (2 columns)
+    :param trace: calcium trace data, shape n frames (row) by n cells
+    :return: split-half correlation of event rate maps
+    """
     # get the total length of the recording and number of cells
     len_recording = trace.shape[0]
     n_cells = trace.shape[1]
-
     # define first and second half session range in time series
     h1 = np.arange(len_recording / 2).astype(int)
     h2 = np.arange(len_recording / 2, len_recording).astype(int)
-
     # build rate maps for first and second session halves
     maps_h1, _, _ = get_rate_maps(position[h1], trace[h1])
     maps_h2, _, _ = get_rate_maps(position[h2], trace[h2])
-
     # get the number of bins in both x and y dimensions
     n_bins_x, n_bins_y = np.maximum(maps_h1.shape[1], maps_h2.shape[1]),\
                          np.maximum(maps_h1.shape[2], maps_h2.shape[2])
-
     # linearize rate maps for both session halves and assign them to first and second idx in last axis
     flat_maps = np.zeros([n_bins_x * n_bins_y, n_cells, 2])
     for cell in range(n_cells):
         flat_maps[:, cell, 0] = maps_h1[cell, :, :].flatten()
         flat_maps[:, cell, 1] = maps_h2[cell, :, :].flatten()
-
     # exclude spatial bins that were not visited in both session halves
     flat_maps[np.isnan(np.sum(flat_maps, axis=2)), :] = np.nan
-
     # correlate first and second session halves leaving out nan values
     map_corr = np.zeros(n_cells)
-
     for cell in range(n_cells):
         if np.any(~np.isnan(flat_maps[:, cell, :])):
             map_corr[cell], _ = pearsonr(x=flat_maps[~np.isnan(flat_maps[:, cell, 0]), cell, 0],
                                          y=flat_maps[~np.isnan(flat_maps[:, cell, 1]), cell, 1])
         else:
             map_corr[cell] = np.nan
-
     return map_corr
 
 
 def get_shuffle_split_half(position, trace, nsims=1000, min_time=30, fps=30):
-
+    """
+    Calculate split-half reliability of event rate maps for circularly shuffled position and calcium traces.
+    :param position: x-y position of the animal, shape n frames (row) by n dimensions (2 columns)
+    :param trace: calcium trace data, shape n frames (row) by n cells
+    :param nsims: number of shuffles to perform
+    :param min_time: minimum time to circularly shift data in seconds
+    :param fps: frames per second of original data
+    :return: split-half correlation for shuffled data, shape n cells (rows) by nsims
+    """
     # get the length of the recording and number of cells
     len_recording = trace.shape[0]
     n_cells = trace.shape[1]
-
     # initialize shuffle_corr
     shuffle_corr = np.zeros([n_cells, nsims])
-
     # circularly shuffle (roll) behavioural data randomly > min_time away from true time, and compute split-half corr
     for i in tqdm(range(nsims), leave=True, position=0, desc='Computing split-half reliability on shuffled data'):
         shuffled_position = np.roll(position, np.random.randint(min_time * fps, len_recording - min_time * fps), axis=0)
         shuffle_corr[:, i] = get_split_half(shuffled_position, trace)
-
     return shuffle_corr
 
 
 def get_place_cells(position, trace, nsims=500, alpha=0.05):
-
+    """
+    Identify place cells based on split-half correlation of event rate maps.
+    :param position: x-y position of the animal, shape n frames (row) by n dimensions (2 columns)
+    :param trace: calcium trace data, shape n frames (row) by n cells
+    :param nsims: number of shuffles to perform
+    :param alpha: p-value threshold to consider cell as place cell
+    :return: split-half reliability p-values for all cells, and place cells as boolean (n cells)
+    """
     n_cells = trace.shape[1]
+    # measure actual split-half
     sh_actual = get_split_half(position, trace)
+    # measure shuffle split half
     sh_shuffle = get_shuffle_split_half(position, trace, nsims)
+    # calculate p values
     p_vals = np.zeros(n_cells)
     place_cells = np.zeros(n_cells).astype(bool)
     for cell in range(n_cells):
@@ -395,132 +435,115 @@ def get_place_cells(position, trace, nsims=500, alpha=0.05):
                 place_cells[cell] = True
     p_vals[np.isnan(trace[0, :])] = np.nan
     place_cells[np.isnan(trace[0, :])] = np.nan
-
     return p_vals, place_cells
 
 
 def get_shr_within(dat, animal, nsims=1000):
+    """
+    Iterate through days of recordings for animal, return within-session split-half reliability p-values and place cells
+    :param dat: data dictionary for target animal as loaded with load_dat
+    :param animal: animal ID as string (e.g., "QLAK-CA1-08")
+    :param nsims: number of times to shuffle data to calculate p-values for reliability
+    :return: split-half reliability p-values and place cells as boolean (n cells).
+    """
     n_days = dat[animal]['trace'].shape[0]
     place_cells = [None] * n_days
     p_vals = [None] * n_days
+    # iterate through days
     for day in range(n_days):
+        # get split-half reliability and place cells for each day
         p_vals[day], place_cells[day] = get_place_cells(dat[animal]['position'][day].T,
                                                         dat[animal]['trace'][day].T, nsims=nsims)
+    # convert to numpy array from list, and transpose
     p_vals, place_cells = np.array(p_vals).T, np.array(place_cells).T
     return p_vals, place_cells
 
 
 def clean_rate_maps(maps, envs):
-    # will clean up extraneous pixels that are in what should be unsampled partitions for each environment (nans out)
+    """
+    Clean up extraneous pixels for each environment (nans out)
+    :param maps: pre-computed rate maps that have been cleaned
+    :param envs: list of environment IDs as strings
+    :return: cleaned rate maps
+    """
     for d, env in enumerate(envs):
-        map_mask =\
-            np.fliplr(get_env_mat(env).T)[:, :, np.newaxis].repeat(25, axis=2).reshape(3, 3, 5, 5).transpose(0, 2, 1, 3).reshape(15,15).\
-            astype(bool)
+        map_mask = \
+            np.fliplr(get_env_mat(env).T)[:, :, np.newaxis].repeat(25, axis=2).reshape(3, 3, 5, 5).transpose(0, 2, 1,
+                                                                                                             3).reshape(
+                15, 15). \
+                astype(bool)
         for f in range(maps['smoothed'].shape[2]):
             maps['smoothed'][:, :, f, d][np.where(~map_mask)] = np.nan
             maps['unsmoothed'][:, :, f, d][np.where(~map_mask)] = np.nan
     return maps
 
 
-
-def get_masked_maps(animal, dat, method="first_square"):
+def get_masked_maps(animal, dat):
     """
-    get_masked_maps is a control analysis that will create rate maps for all recorded sessions using original maps
-    but the shapes for each sequence will be generated from the weighted average of squares (based on temporal distance)
-    and masking each shape for the partitions and cells that have been occluded or not registered, respectively.
+    Create rate maps for all recorded sessions using original maps but the shapes for each sequence will be generated
+    from the first square of each geometric sequence in experiment.
     :param animal: animal ID, as a string (e.g. 'QLAK-CA1-08')
+    :param dat: data dictionary for target animal as loaded with load_dat
     :return: masked maps as dictionary with the field 'smoothed' containing the output
     """
     n_days = dat[animal]['envs'].shape[0]
+    # Identify square days in data (end of each geometric sequence)
     s_days = np.where(dat[animal]['envs'] == 'square')[0]
+    # Index rate maps on square days
     s_maps = dat[animal]['maps']['smoothed'][:, :, :, s_days]
+    # Initialize masked maps
     masked_maps = np.zeros_like(dat[animal]['maps']['smoothed']).transpose(3, 0, 1, 2) * np.nan
-
-    if method=="first_square":
-        s = 0
-        cell_mask = np.zeros(s_maps.shape[2]).astype(bool)
-        for d in range(n_days):
-            mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
-            # check if it is a square day
-            if np.any(d == s_days):
-                # iterate across all cells
-                for c in range(s_maps.shape[2]):
-                    # if cell is registered on that day (non nans) and cell mask is not already filled
-                    if np.any(~mask[:, :, c]) and ~cell_mask[c]:
-                        masked_maps[d:, :, :, c] = deepcopy(s_maps[:, :, c, s])[np.newaxis].repeat(n_days-d, axis=0)
-                        cell_mask[c] = True
-                s+=1
-            masked_maps[d][mask] = np.nan
-
-    elif method=='weighted_average':
-        s = 0
-        for d in range(n_days):
-            # if day is not first square of sequence
-            if np.all(d != s_days):
-                mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
-                s_maps1, s_maps2 = s_maps[:, :, :, s-1], s_maps[:, :, :, s]
-                # calculate the distance from nearest square day
-                w1 = 1 - np.abs((d - s_days[s-1])/(s_days[s-1] - s_days[s]))
-                w2 = 1 - np.abs((d - s_days[s])/(s_days[s-1] - s_days[s]))
-                # assign maps to be the weighted average of the two squares (based on distance in time)
-                masked_maps[d] = (w1 * s_maps1 + w2 * s_maps2) / 2
-                # nan out occluded partitions
-                masked_maps[d][mask] = np.nan
-            else:
-                masked_maps[d] = s_maps[:, :, :, s]
-                s += 1
-
-    # if not using weighted average method, then randomly choose maps from first or second square day of sequence
-    elif method == 'random_choice':
-        s = 0
-        for d in range(n_days):
-            # if day is not first square of sequence
-            if np.all(d != s_days):
-                mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
-                for c in range(s_maps.shape[2]):
-                    # random choice between square reference days for each cell
-                    masked_maps[d, :, :, c] = s_maps[:, :, c, np.random.choice((s-1, s))]
-                    # nan out occluded partitions
-                    masked_maps[d][mask] = np.nan
-            else:
-                masked_maps[d] = s_maps[:, :, :, s]
-                s += 1
-
-    else:
-        s = 0
-        for d in range(n_days):
-            # if day is not first square of sequence
-            if np.all(d != s_days):
-                mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
-                masked_maps[d] = s_maps[:, :, :, s-1]
-            else:
-                masked_maps[d] = s_maps[:, :, :, s]
-                s += 1
-
-    masked_maps = masked_maps.transpose(1, 2, 3, 0)
-    masked_maps = {'smoothed': masked_maps}
-
+    s = 0
+    cell_mask = np.zeros(s_maps.shape[2]).astype(bool)
+    for d in range(n_days):
+        mask = np.isnan(dat[animal]['maps']['smoothed'][:, :, :, d])
+        # check if it is a square day
+        if np.any(d == s_days):
+            # iterate across all cells
+            for c in range(s_maps.shape[2]):
+                # if cell is registered on that day (non nans) and cell mask is not already filled
+                if np.any(~mask[:, :, c]) and ~cell_mask[c]:
+                    masked_maps[d:, :, :, c] = deepcopy(s_maps[:, :, c, s])[np.newaxis].repeat(n_days-d, axis=0)
+                    cell_mask[c] = True
+            s += 1
+        masked_maps[d][mask] = np.nan
+    masked_maps = {'smoothed': masked_maps.transpose(1, 2, 3, 0)}
     return masked_maps
 
+
 def get_pv_vector_fields(animal, p, stable_simulation=False, place_cells=None):
-    # Calculate population vector similarities within sequence relative to first square day
+    """
+    Calculate the similarities of peak population vector correlation for each spatial bin in rate maps relative to first
+    square day in each geometric sequence.
+    :param animal: animal ID, as a string (e.g. 'QLAK-CA1-08')
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param stable_simulation: argument to simulate pv correlation with masked maps (simulates no remapping) as control
+    :param place_cells: argument to use only split-half reliable cells (within session) in calculation
+    :return: dictionary with average population vector correlation maps ("average") shape n bins x n bins x n dims (x-y)
+    x number of environments x number of sequences, along with standard error maps, shape of environment, and population
+    vector correlation matrix (n bins x n bins).
+    """
+    # load in dataset for animal
     dat = load_dat(animal, p, format="joblib")
+    # get environment ID
     envs = dat[animal]['envs'].squeeze()
+    # Option to perform control simulation based on first square day rate maps
     if stable_simulation:
         maps = get_masked_maps(animal, dat)["smoothed"]
     else:
         maps = dat[animal]['maps']['smoothed']
     n_bins, n_cells, n_days, n_envs = maps.shape[0], maps.shape[2], maps.shape[3], np.unique(envs).shape[0]
-
+    # Fit days will be first and last square of each sequence
     fit_days = np.vstack((np.where(envs == 'square')[0][:-1], np.where(envs == 'square')[0][1:])).T
+    # Initialize dictionary that will contain pv correlation maps, standard error, shapes, and pv correlation matrix
     pv_vector_fields_envs = {'average': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
                              'std': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
                              'shape': np.zeros([n_bins, n_bins, n_envs - 1]),
                              'pvmatrix': np.zeros([fit_days.shape[0], n_bins**2, n_bins**2, n_envs - 1])}
-    # pv matrix will be the pv cross-correlation
-
+    # pv matrix will be the pv cross-correlation between two environments and all rate maps of cells registered on days
     for seq, (f1_idx, f2_idx) in enumerate(fit_days):
         for p_idx in np.arange(f1_idx, f2_idx)[1:]:
+            # p_idx and p_maps refer to maps that we will correlate square days with
             f1_maps, f2_maps, p_maps = maps[:, :, :, f1_idx].reshape(n_bins**2, n_cells), \
                                       maps[:, :, :, f2_idx].reshape(n_bins**2, n_cells), \
                                       maps[:, :, :, p_idx].reshape(n_bins**2, n_cells)
@@ -529,15 +552,14 @@ def get_pv_vector_fields(animal, p, stable_simulation=False, place_cells=None):
                 f1_maps[:, ~place_cells[:, f1_idx]] = np.nan
                 f2_maps[:, ~place_cells[:, f2_idx]] = np.nan
                 p_maps[:, ~place_cells[:, p_idx]] = np.nan
-
+            # Initialize pv correlations for all bins and cells
             pv_corrs = np.zeros([n_bins**2, n_bins**2, len([f1_maps, f2_maps])])
             for f, f_maps in enumerate([f1_maps, f2_maps]):
                 nan_mask = np.where(np.logical_and(np.any(~np.isnan(f_maps), axis=0), np.any(~np.isnan(p_maps), axis=0)))[0]
                 pv_corrs[:, :, f] = np.corrcoef(f_maps[:, nan_mask], p_maps[:, nan_mask])[:n_bins**2, n_bins**2:]
             pv_corrs = np.nanmean(pv_corrs, axis=2)
             pv_vector_fields_envs["pvmatrix"][seq, :, :, p_idx - f1_idx - 1] = pv_corrs
-
-            # initialize two flattened maps with zeros
+            # initialize two flattened maps with zeros to identify spatial bin of maximum correlation
             map1, map2 = np.zeros(n_bins**2), np.zeros(n_bins**2)
             pv_vector_fields = np.zeros([n_bins, n_bins, 2]) * np.nan
             for p, pv in enumerate(pv_corrs):
@@ -553,26 +575,38 @@ def get_pv_vector_fields(animal, p, stable_simulation=False, place_cells=None):
                 map1 *= 0
                 map2 *= 0
             for key in list(pv_vector_fields_envs.keys())[:-2]:
-                pv_vector_fields_envs[key][:, :, :, np.where(envs[p_idx] == envs[1:np.unique(envs).shape[0]])[0][0], seq] = \
+                pv_vector_fields_envs[key][:, :, :, np.where(envs[p_idx] == envs[1:np.unique(envs).shape[0]])[0][0],
+                seq] = \
                     pv_vector_fields
-    pv_vector_fields_envs['average'], pv_vector_fields_envs['std'] = np.nanmean(pv_vector_fields_envs['average'], -1),\
-                                                                     np.nanstd(pv_vector_fields_envs['std'], -1)
+    pv_vector_fields_envs['average'], pv_vector_fields_envs['std'] = np.nanmean(pv_vector_fields_envs['average'], -1), \
+        np.nanstd(pv_vector_fields_envs['std'], -1)
     for e, env in enumerate(envs[1:n_envs]):
-        pv_vector_fields_envs['shape'][:, :, e] = ~np.isnan(np.nanmean(np.nanmean(maps[:, :, :, np.where(envs == env)], 2),
-                                                                       -1).squeeze())
+        pv_vector_fields_envs['shape'][:, :, e] = ~np.isnan(
+            np.nanmean(np.nanmean(maps[:, :, :, np.where(envs == env)], 2),
+                       -1).squeeze())
     pv_vector_fields_envs['envs'] = envs
+    # clear data from the cache
     del dat
     return pv_vector_fields_envs
 
 
 def get_pv_vector_fields_model(animal, p, feature_type):
+    """
+    Implementation of get_pv_vector_fields for model simulations. Same as there, but dictionary structure and data
+    loading differ slightly.
+    :param animal: animal ID, as a string (e.g. 'QLAK-CA1-08')
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param feature_type: name of model feature type as string (e.g. "PC" or "GC2PC") for data loading
+    :return: dictionary with average population vector correlation maps ("average") shape n bins x n bins x n dims (x-y)
+    x number of environments x number of sequences, along with standard error maps, shape of environment, and population
+    vector correlation matrix (n bins x n bins).
+    """
     p_models = os.path.join(p, "results", "riab")
     # Calculate population vector similarities within sequence relative to first square day
     envs = joblib.load(os.path.join(p, "data", 'behav_dict'))[animal]['envs']
     # maps = joblib.load(os.path.join(p_models, animal, "maps", f"{animal}_{feature_type}_maps"))["smoothed"]
     maps = joblib.load(os.path.join(p_models, f"{animal}_{feature_type}_maps"))["smoothed"]
     n_bins, n_cells, n_days, n_envs = maps.shape[0], maps.shape[2], maps.shape[3], np.unique(envs).shape[0]
-
     fit_days = np.vstack((np.where(envs == 'square')[0][:-1], np.where(envs == 'square')[0][1:])).T
     pv_vector_fields_envs = {'average': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
                              'std': np.zeros([n_bins, n_bins, 2, n_envs - 1, fit_days.shape[0]]),
@@ -585,7 +619,8 @@ def get_pv_vector_fields_model(animal, p, feature_type):
                                       maps[:, :, :, p_idx].reshape(n_bins**2, n_cells)
             pv_corrs = np.zeros([n_bins**2, n_bins**2, len([f1_maps, f2_maps])])
             for f, f_maps in enumerate([f1_maps, f2_maps]):
-                nan_mask = np.where(np.logical_and(np.any(~np.isnan(f_maps), axis=0), np.any(~np.isnan(p_maps), axis=0)))[0]
+                nan_mask = \
+                np.where(np.logical_and(np.any(~np.isnan(f_maps), axis=0), np.any(~np.isnan(p_maps), axis=0)))[0]
                 pv_corrs[:, :, f] = np.corrcoef(f_maps[:, nan_mask], p_maps[:, nan_mask])[:n_bins**2, n_bins**2:]
             pv_corrs = np.nanmean(pv_corrs, axis=2)
             # also return the complete PV vector cross correlation
@@ -607,19 +642,35 @@ def get_pv_vector_fields_model(animal, p, feature_type):
                 map1 *= 0
                 map2 *= 0
             for key in list(pv_vector_fields_envs.keys())[:-2]:
-                pv_vector_fields_envs[key][:, :, :, np.where(envs[p_idx] == envs[1:np.unique(envs).shape[0]])[0][0], seq] = \
+                pv_vector_fields_envs[key][:, :, :, np.where(envs[p_idx] == envs[1:np.unique(envs).shape[0]])[0][0],
+                seq] = \
                     pv_vector_fields
-    pv_vector_fields_envs['average'], pv_vector_fields_envs['std'] = np.nanmean(pv_vector_fields_envs['average'], -1),\
-                                                                     np.nanstd(pv_vector_fields_envs['std'], -1)
+    pv_vector_fields_envs['average'], pv_vector_fields_envs['std'] = np.nanmean(pv_vector_fields_envs['average'], -1), \
+        np.nanstd(pv_vector_fields_envs['std'], -1)
     for e, env in enumerate(envs[1:n_envs]):
-        pv_vector_fields_envs['shape'][:, :, e] = ~np.isnan(np.nanmean(np.nanmean(maps[:, :, :, np.where(envs == env)], 2),
-                                                                       -1).squeeze()[:, :, 0])
+        pv_vector_fields_envs['shape'][:, :, e] = ~np.isnan(
+            np.nanmean(np.nanmean(maps[:, :, :, np.where(envs == env)], 2),
+                       -1).squeeze()[:, :, 0])
     pv_vector_fields_envs['envs'] = envs
     return pv_vector_fields_envs
 
 
-def get_vector_fields_animals(animals, p, stable_simulation=False, feature_type=False,
-                              place_cells_only=False, alpha=0.01):
+def get_vector_fields_animals(animals, p, stable_simulation=False, feature_type=False, place_cells_only=False,
+                              alpha=0.01):
+    """
+    Iterate through all animals and calculate population vector correlations across all spatial bins in rate maps, build
+    dictionary for all animals, along with calculating population vector correlations averaged across animals and
+    standard deviation of correlation maps.
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param stable_simulation: argument to simulate pv correlation with masked maps (simulates no remapping) as control
+    :param feature_type: name of model feature type as string (e.g. "PC" or "GC2PC") for data loading
+    :param place_cells_only: argument to use only split-half reliable cells (within session) in calculation
+    :param alpha: p-value threshold to consider cell as a place cell from split-half reliability measure
+    :return: pv_vector_fields_animals - dictionary with pv correlation measures for all animals;  average_vector_fields
+    mean - average vector fields across animals; std_vector_fields mean - standard deviation of vector fields across
+    animals
+    """
     # Iterate through all animals rate maps and determine population vector correlation fields to build dict
     pv_vector_fields_animals = {}
     for animal in animals:
@@ -653,9 +704,19 @@ def get_vector_fields_animals(animals, p, stable_simulation=False, feature_type=
         std_vector_fields[a] = pv_vector_fields_animals[animal]['std']
     return pv_vector_fields_animals, average_vector_fields.mean(0), std_vector_fields.mean(0)
 
+
 ########################################################################################################################
 # Representational similarity functions for RSM construction
 def get_cell_rsm(maps, down_sample_mask=None, unsmoothed=False, d_thresh=0):
+    """
+    Compute similarity of event rate maps for cells registered across days.
+    :param maps: event rate maps constructed from position data and calcium traces (precomputed in original dataset)
+    :param down_sample_mask: option to downsample maps before computing similarity with masking
+    :param unsmoothed: argument to use unsmoothed event rate maps
+    :param d_thresh: threshold number of days to require cell to be registered in order to include in calculation
+    :return: cell_rsm - cell rsm as numpy array of shape n days by n days by n cells; cell_idx - cell idx of which cells
+    were included
+    """
     # first load in either smoothed or unsmoothed rate maps depending on input arg
     if unsmoothed:
         # when loading in transpose the maps such that the cell and day axes come first
@@ -671,11 +732,12 @@ def get_cell_rsm(maps, down_sample_mask=None, unsmoothed=False, d_thresh=0):
     n_days = maps.shape[-1]
     # flatten the rate maps
     flat_maps = maps.reshape(maps.shape[0] * maps.shape[1], maps.shape[2], maps.shape[3])
-    # create a mask to avoid correlating nans
+    # create a mask to avoid trying to correlate nans
     nan_idx = np.isnan(flat_maps)
     reg_idx = np.any(~nan_idx, axis=0)
     cell_idx = np.where(reg_idx.sum(axis=1) >= d_thresh)[0]
     cell_rsm = np.zeros([n_days, n_days, cell_idx.shape[0]])
+    # iterate across all pairs of days, correlating event rate maps for each cell across registered days
     for c, cell in tqdm(enumerate(cell_idx), leave=True, position=0,
                         desc='Correlating ratemaps across days and cell pairs'):
         for s1 in range(n_days):
@@ -691,11 +753,19 @@ def get_cell_rsm(maps, down_sample_mask=None, unsmoothed=False, d_thresh=0):
 
 
 def get_mean_map_corr(animals, p):
-    p_data = os.path.join(p, "data")
+    """
+    Compute average event rate map correlation for all animals, matching order of environments, and only correlating
+    cells within animal that are registered across days. Simply a wrapper for get_cell_rsm that reorders rate maps
+    to match the sequence of shapes across days.
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :return: mean_map_corr - average event rate correlation across animals; cannon_order - cannon order of environments
+    (defined by first animal's sequence); labels - environment labels; map_corr_animals_sequences - map correlations
+    without averaging across animals and sequences.
+    """
     # build rate map correlations across geometries, averaging first within animals across sequences, then across animal
     map_corr_animals_sequences = np.zeros([len(animals), 3, 11, 11]) * np.nan
     for a, animal in enumerate(animals):
-        # temp = joblib.load(os.path.join(p_data, f"{animal}_rate_maps"))
         temp = load_dat(animal, p, format="joblib")
         maps, envs = temp[animal]["maps"], temp[animal]["envs"].ravel()
         s_days = np.vstack((np.where(envs == "square")[0][:-1], np.where(envs == "square")[0][1:])).T
@@ -704,6 +774,7 @@ def get_mean_map_corr(animals, p):
             labels = np.array(["square"] + list(cannon_order) + ["square"])
         else:
             for s1, s2 in s_days:
+                # get index for reordering of environments to match fist animal (cannon order)
                 reorder_idx = np.array([np.where(envs[s1+1:s2] == e)[0]+(s1+1) for e in cannon_order]).ravel()
                 maps["smoothed"] = maps["smoothed"].transpose()
                 maps["smoothed"][s1+1:s2] = maps["smoothed"][reorder_idx]
@@ -726,7 +797,19 @@ def get_mean_map_corr(animals, p):
 
 
 def get_rsm_similarity_animals_sequences(animals, p, nsims=100, s_prop=0.9):
+    """
+    Compute the true and shuffled similarity of map correlation across animals for all pairs of enviornments for each
+    geometric sequence.
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param nsims: number of times to perform bootstrapping similarity calculatino and shuffling of data
+    :param s_prop: proportion of data to use in similarity calculation bootstrapping (resampling)
+    :return: df_map_corr_animals_sequences - dataframe of bootstrapped correlation values of similarity across animals
+    within each sequence
+    """
+    # set random seed for shuffling
     np.random.seed(2023)
+    #
     map_corr_envs = joblib.load(os.path.join(p, "results", "map_corr_envs"))
     map_corr_animals_sequences = map_corr_envs["map_corr_animals_sequences"]
     cols = ["Animal A", "Animal B", "Sequence", "Fit", "Shuffle"]
@@ -759,6 +842,15 @@ def get_rsm_similarity_animals_sequences(animals, p, nsims=100, s_prop=0.9):
 
 
 def get_cell_rsm_partitioned(maps, down_sample_mask=None, d_thresh=0):
+    """
+    Compute similarity of 3x3 partitioned event rate maps for all cells (pairwise) registered across sessions.
+    :param maps: event rate maps shape n bins x n bins (expects 15 x 15) x n cells x n days
+    :param down_sample_mask: optional down sampling mask to match minimum number of cells across all days
+    :param d_thresh: optional param to threshold minimum number of days cell must be registered to be included
+    :return: cell_rsm - similarity matrix for all pairwise similarities within cells for all partitions; labels - labels
+    for day and parition ID corresponding to each pairwise comparison in cell_rsm; cell_idx - which cells were included
+    in analysis
+    """
     # first load in either smoothed or unsmoothed rate maps depending on input arg
     # when loading in transpose the maps such that the cell and day axes come first
     maps = deepcopy(maps['smoothed']).transpose((2, 3, 0, 1))
@@ -769,7 +861,6 @@ def get_cell_rsm_partitioned(maps, down_sample_mask=None, d_thresh=0):
     # transpose the rate maps back to their original order (xdim, ydim, ncell, ndays)
     maps = maps.transpose((2, 3, 0, 1))
     n_days = maps.shape[-1]
-
     # build partition masks for 3x3 grid comparisons (5 x 5 partitions of the 15 x 15 space)
     parts_idx = ((0, 5), (5, 10), (10, 15))
     n_parts = len(parts_idx) ** 2
@@ -779,20 +870,19 @@ def get_cell_rsm_partitioned(maps, down_sample_mask=None, d_thresh=0):
         for y1, y2 in parts_idx:
             parts_mask[count, x1:x2, y1:y2] = True
             count += 1
-
     # flatten the rate maps create a mask to avoid correlating nans
     flat_maps = maps.reshape(maps.shape[0] * maps.shape[1], maps.shape[2], maps.shape[3])
     nan_idx = np.isnan(flat_maps)
     reg_idx = np.any(~nan_idx, axis=0)
     # cell_idx will show which cells were included that pass the number of days threshold (d_thresh)
     cell_idx = np.where(reg_idx.sum(axis=1) >= d_thresh)[0]
-
     # initialize cell-wise, partition-wise rsm
     cell_rsm = np.zeros([n_days, n_parts, n_days, n_parts, cell_idx.shape[0]])
     for c, cell in tqdm(enumerate(cell_idx), leave=True, position=0,
                         desc='Correlating partitions of rate maps across days and cell pairs'):
         for s1 in range(n_days):
             for s2 in range(n_days):
+                # break similarities down by parition-wise comparison
                 for p1_idx, p1_mask in enumerate(parts_mask):
                     for p2_idx, p2_mask in enumerate(parts_mask):
                         p1_map, p2_map = maps[:, :, cell, s1][p1_mask], maps[:, :, cell, s2][p2_mask]
@@ -804,7 +894,6 @@ def get_cell_rsm_partitioned(maps, down_sample_mask=None, d_thresh=0):
                                                                                p2_map[nan_mask])[0]
                         else:
                             cell_rsm[s1, p1_idx, s2, p2_idx, c] = np.nan
-
     # reshape cell_rsm to be n days x n parts x n_cells
     cell_rsm = cell_rsm.reshape(n_parts * n_days, n_parts * n_days, -1)
     # labels will have number labels for day and partition along each axis
@@ -814,15 +903,18 @@ def get_cell_rsm_partitioned(maps, down_sample_mask=None, d_thresh=0):
         for p in range(n_parts):
             labels[c, :] = np.array([s, p])
             c += 1
-
     return cell_rsm, labels, cell_idx
 
 
 def get_rsm_partitioned_sequences(animals, p, file_ext='rsm_partitioned'):
     '''
-    get_rsm_partitioned_sequences builds partitioned rsm (averaged over cells) by sequence for animals and store in dict
+    Generate partitioned similairity measures (averaged over cells) by sequence for animals and store in nested
+    dictionary along with labels and sorted in cannon order (defined by first animal's geometric sequence).
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param file_ext: file name extension for saved results from cell rsm dictionary
+    :return: rsm_animals - dictionary of partitioned similarity for all animals
     '''
-    os.chdir(p)
     rsm_animals = {}
     for animal in animals:
         print(animal)
@@ -860,15 +952,20 @@ def get_rsm_partitioned_sequences(animals, p, file_ext='rsm_partitioned'):
             j, k = square_idx[i:i+2]
             k += n_parts
             rsm_animals[animal]['rsm'][i, :, :] = rsm_average[j:k, j:k][sort_idx, :][:, sort_idx]
-
     rsm_animals['cannon_labels'] = rsm_animals['cannon_labels'][:n_parts * 11]
     return rsm_animals
 
 
-def calculate_sequence_similarity(rsm_parts_ordered, method='Tau'):
+def calculate_sequence_similarity(rsm_parts_ordered):
+    """
+    Calculate second-order similarity of paritioned event rate maps similarities across geometric sequences
+    :param rsm_parts_ordered: cell rsm ordered to match partitions and geometries across animals, calculated with
+    get_rsm_partitioned_similarity
+    :return: sequence_similarity with similarities across sequences of geometries in dataframe
+    """
     # First calculate similarity of each animal to itself across sequences
     n_seq, n_animals, n_shuffles, n_deviations = rsm_parts_ordered.shape[0], rsm_parts_ordered.shape[1], 10000, 100
-    sequence_similarity = {'R': np.zeros([n_seq, n_seq, n_animals]) * np.nan,
+    sequence_similarity = {'Tau': np.zeros([n_seq, n_seq, n_animals]) * np.nan,
                            'p': np.zeros([n_seq, n_seq, n_animals]) * np.nan,
                            'SE': np.zeros([n_seq, n_seq, n_animals])}
     for s1 in tqdm(range(n_seq)):
@@ -884,25 +981,16 @@ def calculate_sequence_similarity(rsm_parts_ordered, method='Tau'):
                     # remove nans
                     rsm1, rsm2 = rsm1[nan_mask], rsm2[nan_mask]
                     # calculate actual pearson correlation
-                    if method == 'Tau':
-                        true_corr = kendalltau(rsm1, rsm2)[0]
-                    else:
-                        true_corr = pearsonr(rsm1, rsm2)[0]
-                    sequence_similarity['R'][s1, s2, a] = true_corr
+                    true_corr = kendalltau(rsm1, rsm2)[0]
+                    sequence_similarity['Tau'][s1, s2, a] = true_corr
                     # calculate standard error for each comparison using bootstrap procedure
                     for i in range(n_deviations):
                         # create idx for random draws with replacement from rsms
                         choice_idx = np.sort(np.random.choice(np.arange(rsm1.shape[0]), size=int(rsm1.shape[0]),
                                                               replace=True))
                         # calculate deviation from true correlation
-                        if method == 'Tau':
-                            sequence_similarity['SE'][s1, s2, a] += (true_corr -
-                                                                     kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
-                        else:
-                            sequence_similarity['SE'][s1, s2, a] += (true_corr -
-                                                                     pearsonr(rsm1[choice_idx], rsm2[choice_idx])[
-                                                                         0]) ** 2
-
+                        sequence_similarity['SE'][s1, s2, a] += (true_corr -
+                                                                 kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
                     # compute SE from deviations
                     sequence_similarity['SE'][s1, s2, a] = np.sqrt(sequence_similarity['SE'][s1, s2, a] /
                                                                    (n_deviations - 1))
@@ -910,17 +998,20 @@ def calculate_sequence_similarity(rsm_parts_ordered, method='Tau'):
                     shuffle_corr = np.zeros(n_shuffles) * np.nan
                     for i in range(n_shuffles):
                         shuffle_idx = np.random.permutation(rsm2.shape[0])
-                        if method == 'Tau':
-                            shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
-                        else:
-                            shuffle_corr[i] = pearsonr(rsm1, rsm2[shuffle_idx])[0]
+                        shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
                     sequence_similarity['p'][s1, s2, a] = (n_shuffles - (true_corr > shuffle_corr).sum())/n_shuffles
     return sequence_similarity
 
 
-def calculate_animal_similarity(rsm_parts_ordered, method='Tau'):
+def calculate_animal_similarity(rsm_parts_ordered):
+    """
+    Calculate second-order similarity of paritioned event rate maps similarities across animals within each sequences
+    :param rsm_parts_ordered: cell rsm ordered to match partitions and geometries across animals, calculated with
+    get_rsm_partitioned_similarity
+    :return: animal_similarity with similarities across animals within each sequence of geometries in a dataframe
+    """
     n_seq, n_animals, n_shuffles, n_deviations = (rsm_parts_ordered.shape[0], rsm_parts_ordered.shape[1], 10000, 100)
-    animal_similarity = {'R': np.zeros([n_animals, n_animals, n_seq]) * np.nan,
+    animal_similarity = {'Tau': np.zeros([n_animals, n_animals, n_seq]) * np.nan,
                          'p': np.zeros([n_animals, n_animals, n_seq]) * np.nan,
                          'SE': np.zeros([n_animals, n_animals, n_seq])}
     for s in range(n_seq):
@@ -936,25 +1027,16 @@ def calculate_animal_similarity(rsm_parts_ordered, method='Tau'):
                     # remove nans
                     rsm1, rsm2 = rsm1[nan_mask], rsm2[nan_mask]
                     # calculate actual pearson correlation
-                    if method == 'Tau':
-                        true_corr = kendalltau(rsm1, rsm2)[0]
-                    else:
-                        true_corr = pearsonr(rsm1, rsm2)[0]
-                    animal_similarity['R'][a1, a2, s] = true_corr
+                    true_corr = kendalltau(rsm1, rsm2)[0]
+                    animal_similarity['Tau'][a1, a2, s] = true_corr
                     # calculate standard error for each comparison using bootstrap procedure
                     for i in range(n_deviations):
                         # create idx for random draws with replacement from rsms
                         choice_idx = np.sort(np.random.choice(np.arange(rsm1.shape[0]), size=int(rsm1.shape[0]),
                                                               replace=True))
                         # calculate deviation from true correlation
-                        if method == 'Tau':
-                            animal_similarity['SE'][a1, a2, s] += (true_corr -
+                        animal_similarity['SE'][a1, a2, s] += (true_corr -
                                                                    kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
-                        else:
-                            animal_similarity['SE'][a1, a2, s] += (true_corr -
-                                                                   pearsonr(rsm1[choice_idx], rsm2[choice_idx])[
-                                                                       0]) ** 2
-
                     # compute SE from deviations
                     animal_similarity['SE'][a1, a2, s] = np.sqrt(animal_similarity['SE'][a1, a2, s] /
                                                                  (n_deviations - 1))
@@ -962,25 +1044,29 @@ def calculate_animal_similarity(rsm_parts_ordered, method='Tau'):
                     shuffle_corr = np.zeros(n_shuffles) * np.nan
                     for i in range(n_shuffles):
                         shuffle_idx = np.random.permutation(rsm2.shape[0])
-                        if method == 'Tau':
-                            shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
-                        else:
-                            shuffle_corr[i] = pearsonr(rsm1, rsm2[shuffle_idx])[0]
+                        shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
                     animal_similarity['p'][a1, a2, s] = (n_shuffles - (true_corr > shuffle_corr).sum())/n_shuffles
-
-        np.fill_diagonal(animal_similarity['R'][:, :, s], np.nan)
+        np.fill_diagonal(animal_similarity['Tau'][:, :, s], np.nan)
     return animal_similarity
 
 
 def get_rsm_partitioned_similarity(rsm_parts_animals, animals, get_sequence_similarity=True, get_animal_similarity=True,
-                                   subsample=False, n_cells=100, n_reps=100, method='Tau'):
+                                   subsample=False, n_cells=100, n_reps=100):
     '''
-    get_rsm_similarities will calculate the similarity of partition-wise rsms within animals across
-    seqs and across animals within the same seqs
+    Calculate second-order similarities in event rate maps across geometric sequences, across animals within sequence,
+    and order paritioned similarity matrices and average resulting matrices across animals.
+    :param rsm_parts_animals: partitioned similarities across animals, computed with get_rsm_partitioned_sequences
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :arg get_sequence_similarity: whether to calculate similarities across sequences
+    :arg get_animal_similarity: whether to calculate similarities across animals
+    :arg subsample: whether to include a defined number of cells across animals with bootstrap resampling procedure
+    :arg n_cells: number of cells to include in subsample if subsample is true
+    :param n_reps: number of times to resample if subsample is true
+    :return: sequence_similarity - dataframe of similarities across seqeunce (optional); animal_similarity - dataframe
+    of similarities across animals (optional); rsm_parts_ordered, rsm_parts_averaged
     '''
     if not subsample:
-        # animals = list(rsm_parts_animals.keys())[1:] # drop cannon labels
-        # collect all rsms into each sequences, ordered by animal
+        # collect all rsms into each sequence, ordered by animal
         rsm_parts_ordered = np.nan * np.zeros([rsm_parts_animals[animals[0]]['rsm'].shape[0], len(animals),
                                                rsm_parts_animals[animals[0]]['rsm'].shape[1],
                                                rsm_parts_animals[animals[0]]['rsm'].shape[2]])
@@ -990,14 +1076,15 @@ def get_rsm_partitioned_similarity(rsm_parts_animals, animals, get_sequence_simi
                 rsm_parts_ordered[s, a] = np.nanmean(rsm_parts_animals[animal]['rsm'][s], -1)
         rsm_parts_averaged = np.nanmean(np.nanmean(rsm_parts_ordered, 0), 0)
         if get_sequence_similarity:
-            sequence_similarity = calculate_sequence_similarity(rsm_parts_ordered, method)
+            sequence_similarity = calculate_sequence_similarity(rsm_parts_ordered)
         if get_animal_similarity:
-            animal_similarity = calculate_animal_similarity(rsm_parts_ordered, method)
+            animal_similarity = calculate_animal_similarity(rsm_parts_ordered)
         if get_sequence_similarity and get_animal_similarity:
             return sequence_similarity, animal_similarity, rsm_parts_ordered, rsm_parts_averaged
         else:
             return rsm_parts_ordered, rsm_parts_averaged
     else:
+        # if subsample is true, generate similarities from sub-sampling cells
         rsm_parts_ordered = np.nan * np.zeros([n_reps, rsm_parts_animals[animals[0]]['rsm'].shape[0], len(animals),
                                                rsm_parts_animals[animals[0]]['rsm'].shape[1],
                                                rsm_parts_animals[animals[0]]['rsm'].shape[2]])
@@ -1010,12 +1097,20 @@ def get_rsm_partitioned_similarity(rsm_parts_animals, animals, get_sequence_simi
                 for s in range(n_seq):
 
                     rsm_parts_ordered[r, s, a] = np.nanmean(rsm_parts_animals[animal]['rsm'][s][:, :, sub_idx], -1)
-        # rsm_parts_ordered = np.nanmean(rsm_parts_ordered, 0)
         rsm_parts_averaged = np.nanmean(np.nanmean(rsm_parts_ordered, 1), 1)
         return rsm_parts_ordered, rsm_parts_averaged
 
 
 def predict_rsm_animals(animals, rsm_parts_animals):
+    """
+    Try to predict similarity values for all geometry-partition pairs in environments across animals with linear
+    classifier, and predict animal ID with categorical naive bayes.
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param rsm_parts_animals: partitioned similarities across animals, computed with get_rsm_partitioned_sequences
+    :return: df_animal_similarity - dataframe for predictions of rsm across animals for each sequence with linear model;
+    df_animal_ID - dataframe for prediction of animal ID with categorical naive bayes; df_animals - datafrane of
+    similarities across animnals; df_sequences - dataframe for similarities across sequences
+    """
     rsm_parts_ordered, rsm_parts_averaged = get_rsm_partitioned_similarity(rsm_parts_animals, animals,
                                                                            False, False)
     if rsm_parts_animals[animals[0]]['rsm'].shape[-1] > rsm_parts_animals[animals[0]]['rsm'].shape[-2]:
@@ -1033,7 +1128,6 @@ def predict_rsm_animals(animals, rsm_parts_animals):
                         deepcopy(rsm_parts_ordered[s, a1]), deepcopy(rsm_parts_ordered[s, a2]), \
                             deepcopy(rsm_parts_ordered[s, a1]), \
                             deepcopy(rsm_parts_ordered[s, a2])
-
                     if np.any(~np.isnan(rsm1)) and np.any(~np.isnan(rsm2)):
                         nan_mask = ~np.isnan(rsm1[np.eye(rsm1.shape[0]).astype(bool)] +
                                              rsm2[np.eye(rsm2.shape[0]).astype(bool)])
@@ -1055,7 +1149,6 @@ def predict_rsm_animals(animals, rsm_parts_animals):
     df_animal_similarity['Data'][df_animal_similarity['Data'] == 0] = "Actual"
     df_animal_similarity['Data'][df_animal_similarity['Data'] == 1] = "Shuffle"
     df_animal_similarity.dropna(axis=0, inplace=True)
-
     cols = ["Animal", "Sequence", "Correct", "Data"]
     df_animal_ID = pd.DataFrame(data=np.zeros([2*(np.prod(rsm_parts_ordered.shape[:2]) -1), len(cols)]), columns = cols)
     # fit linear model from rsms to predict animal ID in each sequence
@@ -1091,8 +1184,8 @@ def predict_rsm_animals(animals, rsm_parts_animals):
                                                                                                    np.newaxis])) == a1,
                                    1))
             c += 1
-    df_animal_ID['Data'][df_animal_ID['Data']==0] = "Actual"
-    df_animal_ID['Data'][df_animal_ID['Data']==1] = "Shuffle"
+    df_animal_ID['Data'][df_animal_ID['Data'] == 0] = "Actual"
+    df_animal_ID['Data'][df_animal_ID['Data'] == 1] = "Shuffle"
 
     cols = ["Animal", "Sequence", "Decoding Accuracy", "Data"]
     df_animals = pd.DataFrame(data=np.zeros([2*(np.prod(rsm_parts_ordered.shape[:2]) -1), len(cols)]), columns = cols)
@@ -1134,7 +1227,6 @@ def predict_rsm_animals(animals, rsm_parts_animals):
             c += 1
     df_animals['Data'][df_animals['Data'] == 0] = "Actual"
     df_animals['Data'][df_animals['Data'] == 1] = "Shuffle"
-
     cols = ["Animal", "Sequence1", "Sequence2", "Decoding Accuracy", "Data"]
     df_sequences = pd.DataFrame(data=np.zeros([2 * (np.prod(rsm_parts_ordered.shape[:2]) - 1), len(cols)]),
                                 columns=cols)
@@ -1166,7 +1258,6 @@ def predict_rsm_animals(animals, rsm_parts_animals):
             # fit second model to shuffle data
             lm_shuffle = LinearRegression(n_jobs=int(1e4))
             lm_shuffle.fit(X=np.random.permutation(X), y=y)
-
             rsm_copy = deepcopy(rsm_parts_animals[animal]['rsm'][s1])
             nan_mask = ~np.isnan(rsm_copy[np.eye(rsm_copy.shape[0]).astype(bool)])
             target = rsm_copy[nan_mask, :][:, nan_mask]
@@ -1177,12 +1268,19 @@ def predict_rsm_animals(animals, rsm_parts_animals):
             c += 1
     df_sequences['Data'][df_sequences['Data'] == 0] = "Actual"
     df_sequences['Data'][df_sequences['Data'] == 1] = "Shuffle"
-
     return df_animal_similarity, df_animal_ID, df_animals, df_sequences
 
 
 def get_partitioned_rsm_similarity_resampled(animals, rsm_parts_animals, n_samples, n_reps=10):
-    # How correlated are RSMs when we build the average from diff numbers of cells? downsample to match n cells across
+    """
+    Calculate partitioned event rate map similarity from resampling with varied numbers of cells.
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param rsm_parts_animals: partitioned similarities across animals, computed with get_rsm_partitioned_sequences
+    :param n_samples: number of cells to include in resampling
+    :param n_reps: number of times to repeat resampling procedure
+    :return: dataframe of similarities across animals with varied numbers of cells
+    """
+    # Initialize downsampled matrix for comparisons
     rsm_fits_dscells = np.zeros([len(n_samples) * len(animals) ** 2 * n_reps, 5]) * np.nan
     c = 0
     for k in range(n_reps):
@@ -1204,13 +1302,17 @@ def get_partitioned_rsm_similarity_resampled(animals, rsm_parts_animals, n_sampl
                     r = pearsonr(rsm_a1[nan_mask], rsm_a2[nan_mask])[0]
                     rsm_fits_dscells[c, :] = np.hstack((a1, a2, n, k, r))
                     c += 1
-    df = pd.DataFrame(data=rsm_fits_dscells, columns=["Animal 1", "Animal 2", "N cells", "Rep", "R"])
+    df = pd.DataFrame(data=rsm_fits_dscells, columns=["Animal 1", "Animal 2", "N cells", "Rep", "Tau"])
     df.groupby("N cells").mean()
     return df
 
 
 def get_noise_margin(rsm_parts_ordered):
-    # calculate the noise ceiling from actual data
+    """
+    Calculate the upper and lower bounds of the noise ceiling from similarities measured in true dataset
+    :param rsm_parts_ordered: paritioned similairites across animals, ordered to match across (based on first animal)
+    :return: noise margin - upper and lower bounds of noise ceiling for each animal; mask - values used for comparison
+    """
     n_seq, n_animals, n_pixels = rsm_parts_ordered.shape[:3]
     # calculate the noise ceiling
     noise_margin = np.zeros([n_animals, 2])
@@ -1227,7 +1329,15 @@ def get_noise_margin(rsm_parts_ordered):
     return noise_margin, mask
 
 
-def get_rsm_fit_bootstrap(rsm1, rsm2, n_deviations=100, n_shuffles=1000, method='Pearson'):
+def get_rsm_fit_bootstrap(rsm1, rsm2, n_deviations=100, n_shuffles=1000):
+    """
+    Calculate bootstrapped similarity between average rsm and target rsm
+    :param rsm1: first rsm to calculate similarity (e.g., calculated from data)
+    :param rsm2: second rsm to calculate similarity against (e.g., model result)
+    :param n_deviations: number of times to iterate to calculate deviation from rsm comparison
+    :param n_shuffles: number of times to perform shuffling to compute p-values
+    :return: true correlation values, standard errors, and p-values of rsm similarity
+    """
     # takes average rsm result of target rsm (actual data or model) and compares to average result of model
     # take lower triangle of each
     rsm1, rsm2 = rsm1[np.tri(rsm1.shape[0], k=-1).astype(bool)], rsm2[np.tri(rsm2.shape[0], k=-1).astype(bool)]
@@ -1235,11 +1345,8 @@ def get_rsm_fit_bootstrap(rsm1, rsm2, n_deviations=100, n_shuffles=1000, method=
     nan_mask = ~np.isnan(rsm1 + rsm2)
     # remove nans
     rsm1, rsm2 = rsm1[nan_mask], rsm2[nan_mask]
-    # calculate actual pearson correlation
-    if method == 'Tau':
-        true_corr = kendalltau(rsm1, rsm2)[0]
-    else:
-        true_corr = pearsonr(rsm1, rsm2)[0]
+    # calculate actual correlation
+    true_corr = kendalltau(rsm1, rsm2)[0]
     # calculate standard error for each comparison using bootstrap procedure
     se = 0
     for i in range(n_deviations):
@@ -1247,25 +1354,26 @@ def get_rsm_fit_bootstrap(rsm1, rsm2, n_deviations=100, n_shuffles=1000, method=
         choice_idx = np.sort(np.random.choice(np.arange(rsm1.shape[0]), size=int(rsm1.shape[0]),
                                                   replace=True))
         # calculate deviation from true correlation
-        if method == 'Tau':
-            se += (true_corr - kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
-        else:
-            se += (true_corr - pearsonr(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
+        se += (true_corr - kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]) ** 2
     # compute SE from deviations
     se = np.sqrt(se / (n_deviations - 1))
     # calculate shuffled correlations to estimate p value
     shuffle_corr = np.zeros(n_shuffles) * np.nan
     for i in range(n_shuffles):
         shuffle_idx = np.random.permutation(rsm2.shape[0])
-        if method == 'Tau':
-            shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
-        else:
-            shuffle_corr[i] = pearsonr(rsm1, rsm2[shuffle_idx])[0]
+        shuffle_corr[i] = kendalltau(rsm1, rsm2[shuffle_idx])[0]
     p_val = (n_shuffles - (true_corr > shuffle_corr).sum()) / n_shuffles
     return true_corr, se, p_val
 
 
-def get_rsm_fit_bootstrap_verbose(rsm1, rsm2, n_deviations=100, n_shuffles=1000, method='Pearson'):
+def get_rsm_fit_bootstrap_verbose(rsm1, rsm2, n_deviations=100):
+    """
+    Calculate bootstrapped similarity between average rsm and target rsm but return statistics from kendall tau
+    :param rsm1: first rsm to calculate similarity (e.g., calculated from data)
+    :param rsm2: second rsm to calculate similarity against (e.g., model result)
+    :param n_deviations: number of times to iterate to calculate deviation from rsm comparison
+    :return: dataframe with bootstrapped similarity comparisons and stats
+    """
     # takes average rsm result of target rsm (actual data or model) and compares to average result of model
     # take lower triangle of each
     rsm1, rsm2 = rsm1[np.tri(rsm1.shape[0], k=-1).astype(bool)], rsm2[np.tri(rsm2.shape[0], k=-1).astype(bool)]
@@ -1273,7 +1381,6 @@ def get_rsm_fit_bootstrap_verbose(rsm1, rsm2, n_deviations=100, n_shuffles=1000,
     nan_mask = ~np.isnan(rsm1 + rsm2)
     # remove nans
     rsm1, rsm2 = rsm1[nan_mask], rsm2[nan_mask]
-
     # calculate standard error for each comparison using bootstrap procedure
     boot_fits = np.zeros(n_deviations)
     for i in range(n_deviations):
@@ -1281,23 +1388,27 @@ def get_rsm_fit_bootstrap_verbose(rsm1, rsm2, n_deviations=100, n_shuffles=1000,
         choice_idx = np.sort(np.random.choice(np.arange(rsm1.shape[0]), size=int(rsm1.shape[0]),
                                                   replace=True))
         # calculate deviation from true correlation
-        if method == 'Tau':
-            boot_fits[i] += kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]
-        else:
-            boot_fits[i] += pearsonr(rsm1[choice_idx], rsm2[choice_idx])[0]
-
+        boot_fits[i] += kendalltau(rsm1[choice_idx], rsm2[choice_idx])[0]
     return boot_fits
 
 
 def get_rsm_partitioned_sequences_models(animals, p, file_ext='rsm_partitioned', agg=True):
     '''
-    get_rsm_partitioned_sequences builds partitioned rsm (averaged over cells) by sequence for animals and store in dict
+
+    Generate partitioned similairity measures (averaged over cells) by sequence for model results across animals and
+    store in nested dictionary along with labels and sorted in cannon order (defined by first animal's geometric
+     sequence).
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param file_ext: file name extension for saved results from model rsm dictionary
+    :return: rsm_animals - dictionary of partitioned similarity for all animals
+    :arg agg: option to aggregate similarity across all cells (True), or calculate for each model cell / feature (False)
+    :return: rsm_animals - dictionary of partitioned similarity for all animnals for all models
     '''
     os.chdir(p)
     rsm_animals = {}
     for animal in animals:
         os.chdir(os.path.join(p))
-        # os.chdir(os.path.join(p, animal, "rsm"))
         # load the cell- and partion-wise RSM previously calculated for each animal
         rsm_dict = joblib.load(f'{animal}_{file_ext}')
         # average across cell axis (last) if not already using agg (PV corr) rsm
@@ -1348,13 +1459,17 @@ def get_rsm_partitioned_sequences_models(animals, p, file_ext='rsm_partitioned',
 
 
 def get_rsm_partitioned_similarity_models(rsm_parts_models, animals, get_sequence_similarity=True,
-                                          get_animal_similarity=True, method='Tau'):
+                                          get_animal_similarity=True):
     '''
-    get_rsm_similarities will calculate the similarity of partition-wise rsms within animals across
-    seqs and across animals within the same seqs
+    Calculate the similarity of partitioned rsms within animals across sequences and across animals within the same
+    sequences for model results.
+    :param rsm_parts_models: dictionary of rsm paritioned similarity results from get_rsm_partitioned_sequences_models
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :return: sequence_similarity - dataframe of similarities across seqeunce (optional) for model results;
+    animal_similarity - dataframe of similarities across animals (optional) for model results;
+    rsm_parts_ordered - partiioned similarities across geometries ordered to match across animals, rsm_parts_averaged -
+    average results across animals and sequences
     '''
-    # animals = list(rsm_parts_animals.keys())[1:] # drop cannon labels
-    # collect all rsms into each sequences, ordered by animal
     rsm_parts_ordered = np.nan * np.zeros([rsm_parts_models[animals[0]].shape[0], len(animals),
                                            rsm_parts_models[animals[0]].shape[1],
                                            rsm_parts_models[animals[0]].shape[2]])
@@ -1363,9 +1478,9 @@ def get_rsm_partitioned_similarity_models(rsm_parts_models, animals, get_sequenc
         for s in range(n_seq):
             rsm_parts_ordered[s, a] = rsm_parts_models[animal][s]
     if get_sequence_similarity:
-        sequence_similarity = calculate_sequence_similarity(rsm_parts_ordered, method)
+        sequence_similarity = calculate_sequence_similarity(rsm_parts_ordered)
     if get_animal_similarity:
-        animal_similarity = calculate_animal_similarity(rsm_parts_ordered, method)
+        animal_similarity = calculate_animal_similarity(rsm_parts_ordered)
     rsm_parts_averaged = np.nanmean(np.nanmean(rsm_parts_ordered, 0), 0)
     if get_sequence_similarity and get_animal_similarity:
         return sequence_similarity, animal_similarity, rsm_parts_ordered, rsm_parts_averaged
@@ -1374,6 +1489,13 @@ def get_rsm_partitioned_similarity_models(rsm_parts_models, animals, get_sequenc
 
 
 def get_rsm_model_dict(animals, feature_types, p_models):
+    """
+    Build dictionary of model results for comparisons against actual data across all animals
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param feature_types: list of models feature types as string (e.g., ["PC", "GC2PC", etc...]
+    :param p_models: path to model results (e.g., "User/yourname/Desktop/georepca1/results/riab")
+    :return:
+    """
     # creates a dictionary for each model rsm averaged across sequences and ordered for each animal and sequence
     rsm_models = {}
     for feature_type in feature_types:
@@ -1390,17 +1512,28 @@ def get_rsm_model_dict(animals, feature_types, p_models):
 
 
 def get_model_rsm(animals, p, feature_type):
-    # wrapper function for model rsm generation that uses get_cell_rsm_partitioned
+    """
+    Wrapper functioun to generate a model rsm dictionary with get_cell_rsm_paritioned
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param feature_type: name of feature type as string (e.g., "GC2PC")
+    :return: dictionary of model results across animals
+    """
+    # load in results from simulation
     p_models = os.path.join(p, "results", "riab")
+    # load in actual behavioral data
     behav_dict = joblib.load(os.path.join(p, "data", "behav_dict"))
     for animal in animals:
+        # construct model event rate maps
         models_maps = joblib.load(os.path.join(p_models, f'{animal}_{feature_type}_maps'))
+        # build rsm from simulated event rate maps
         rsm_model, rsm_labels_model, cell_idx_model = get_cell_rsm_partitioned(models_maps)
+        # add into dictionary with structured information including relevant info like environment, day, partition, etc.
         rsm_dict_model = {'RSM': rsm_model, 'd_labels': rsm_labels_model[:, 0], 'p_labels': rsm_labels_model[:, 1],
                           'cell_idx': cell_idx_model, 'envs': behav_dict[animal]['envs']}
+        # save results and return dictionary
         joblib.dump(rsm_dict_model, os.path.join(p_models, f'{animal}_model_{feature_type}_rsm_partitioned_cellwise'))
     return rsm_dict_model
-
 
 
 ########################################################################################################################
