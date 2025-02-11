@@ -3,12 +3,23 @@ from utils import *
 
 def plot_maps(maps, animal, path, SFPs_traced=False, example_cells_idx=False, map_type=False, unsmoothed=False,
               norm_days=True, make_dir=True, cmap='viridis', cpf = 10, fig_height=8, fig_width=10):
-    '''
-    Plot aligned rate maps for registered cells across days
-    :arg path: defines where plots of aligned rate maps will be saved
-    :arg unsmoothed: whether to plot smoothed or unsmoothed ratemaps
-    :arg make_dir: indicate whether new folder needs to be created for saving images
-    '''
+    """
+    Plot rate maps for recorded cells or model features across sessions.
+    :param maps: rate maps from recorded cells or model features
+    :param animal: name of animal as string (e.g., "QLAK-CA1-08")
+    :param path: path to save figure
+    :param SFPs_traced: whether to plot traces spatial footprints with rate maps in left margin
+    :param example_cells_idx: indices for example cells to plot
+    :param map_type: type of model feature if simulated data with name as string (e.g., "PC")
+    :param unsmoothed: whether to use unsmoothed rate maps
+    :param norm_days: whether to normalize color map to max values for each cell across sessions (days)
+    :param make_dir: whether to generate new directory to save rate map figures
+    :param cmap: type of matplotlib colormap to use (e.g., "viridis")
+    :param cpf: number of cells to plot (rows) per figure
+    :param fig_height: height of the figure
+    :param fig_width: width of the figure
+    :return: None (figures saved to path/rate_maps)
+    """
     os.chdir(path)
     if make_dir:
         ppath = os.path.join(path, 'rate_maps')
@@ -22,12 +33,10 @@ def plot_maps(maps, animal, path, SFPs_traced=False, example_cells_idx=False, ma
             os.chdir(spath)
     else:
         os.chdir(os.path.join(path, 'rate_maps'))
-
     if unsmoothed:
         maps = maps['unsmoothed']
     else:
         maps = maps['smoothed']
-
     n_cells = maps.shape[2]
     n_days = maps.shape[3]
     # iterate over cells
@@ -156,8 +165,7 @@ def plot_decoding_within_days(df_decoding, residual=False, vmax=40, plot_min_lin
     plt.show()
 
 
-def plot_map_corr_mds(mean_map_corr, labels, vmax=.5, cbar_title="Ratemap correlation"):
-
+def plot_map_corr_mds(mean_map_corr, labels):
     mds_ = MDS(n_components=2, metric=False, n_jobs=9, n_init=1, max_iter=int(1e12), eps=1e-12, random_state=9003,
                dissimilarity='precomputed')
     mds_.fit(1-mean_map_corr)
@@ -188,7 +196,6 @@ def plot_map_corr_mds(mean_map_corr, labels, vmax=.5, cbar_title="Ratemap correl
     plt.tight_layout()
     plt.setp(ax.spines.values(), linewidth=4., color="k")
     plt.show()
-
     return fig
 
 
@@ -324,9 +331,7 @@ def plot_rsm_parts_mds(rsm_parts_averaged, precomputed=False):
                                      square_average[2, 0] - square_average[6, 0]) + np.pi
     rotation_mat = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
     mds_.embedding_ = (rotation_mat@mds_.embedding_.T).T
-
     sns.set(style='dark', font_scale=2.1)
-
     # plot individual embeddings in a single figure panel
     fig = plt.figure(figsize=(24, 10))
     c = 1
@@ -339,13 +344,9 @@ def plot_rsm_parts_mds(rsm_parts_averaged, precomputed=False):
 
         ax = plt.subplot(2, n_envs//2, c)
         c += 1
-
         ax.scatter(np.vstack((mds_.embedding_[:n_parts, 0], mds_.embedding_[-n_parts:, 0])).mean(0),
                    np.vstack((mds_.embedding_[:n_parts, 1], mds_.embedding_[-n_parts:, 1])).mean(0), marker="+",
                    c="white", edgecolor="k", s=300, linewidth=3, zorder=2)
-        # ax.scatter(mds_.embedding_[env_labels[nan_mask] == i, 0], mds_.embedding_[env_labels[nan_mask] == i, 1],
-        #            s=650, c=c_labels[nan_mask][env_labels[nan_mask] == i], vmin=0, vmax=n_parts-1, alpha=1.,
-        #            cmap="cool", edgecolor='k', linewidth=0., marker='s')
         ax.scatter(mds_.embedding_[env_labels[nan_mask] == i, 0], mds_.embedding_[env_labels[nan_mask] == i, 1],
                    s=400, c=c_labels[nan_mask][env_labels[nan_mask] == i], vmin=0, vmax=n_parts - 1, alpha=1.,
                    cmap="cool", edgecolor='k', linewidth=0., marker="s")
@@ -468,7 +469,6 @@ def plot_rsm_partitioned_similarity_resampled(df, n_samples):
     sns.set(style="dark", font_scale=2.25)
     fig = plt.figure(figsize=(6, 6))
     ax = plt.subplot()
-    # sns.barplot(data=df, x="N cells", y="R", estimator="mean", errorbar="se")
     sns.lineplot(data=df.groupby("N cells").mean(), x="N cells", y="R",
                  color="gray", linestyle="--", linewidth=4., zorder=0)
     sns.scatterplot(data=df.groupby("N cells").mean(), x="N cells", y="R",
@@ -508,6 +508,31 @@ def plot_heuristic_model_fits(euc_fit, euc_se, bound_fit, bound_se, traj_fit, tr
     return fig
 
 
+def plot_ca1_model_fits_sequences(df_agg_bootstrap_sequences, n_seq, noise_margin_agg):
+    sns.set(style='dark', font_scale=2.)
+    fig = plt.figure(figsize=(6, 4))
+    ax = plt.subplot()
+    bp = sns.barplot(data=df_agg_bootstrap_sequences, hue=df_agg_bootstrap_sequences["Model"],
+                     y=df_agg_bootstrap_sequences["Fit"], x=df_agg_bootstrap_sequences["Sequence"],
+                     width=.7, saturation=1., palette='cool', edgecolor='k', linewidth=4,
+                     errcolor='k', legend=False)
+    for pt, patch in enumerate(bp.patches):
+        if pt < df_agg_bootstrap_sequences.shape[0]:
+            plt.errorbar(x=patch.get_x() + .06, y=patch.get_height(), yerr=df_agg_bootstrap_sequences['SE'].iloc[pt],
+                         c='k', linewidth=4.)
+    ax.axhline(np.mean(noise_margin_agg[:, 0], axis=0), c='blue', linewidth=4.0, alpha=.6)
+    ax.axhline(np.mean(noise_margin_agg[:, 1], axis=0), c='blue', linewidth=4.0, alpha=.6)
+    ax.set_ylim([0.0, .75])
+    ax.set_ylabel("CA1 Fit ($Tau$)", weight='bold')
+    ax.axhline(0.0, c='k', linewidth=5.)
+    ax.set_xticks(np.arange(n_seq))
+    ax.set_xticklabels(np.arange(n_seq) + 1, weight='bold', fontsize=28, rotation=0)
+    ax.set_xlabel("Sequence", weight="bold")
+    plt.setp(ax.spines.values(), color='k', linewidth=5)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
 def plot_riab_example(animal, p, shape="square", const=0.08, scalar=12):
     fps = 30
     p_data = os.path.join(p, "data")
@@ -531,8 +556,6 @@ def plot_riab_example(animal, p, shape="square", const=0.08, scalar=12):
                                "min_fr": 0,
                                "max_fr": 1,
                                "name": "GridCells"})
-
-
     BVC = BoundaryVectorCells(Ag, params={"n": 10,
                                           "reference_frame": "allocentric",
                                           "tuning_distance_distribution": "uniform",
@@ -663,3 +686,54 @@ def plot_model2ca1_similarities(df_agg_bootstrap, noise_margin_agg, feature_name
     plt.show()
     return fig
 
+def plot_ca1_model_fit_subsets(df_hypo_comps, feature_names):
+    sns.set(style='dark', font_scale=2.)
+    fig = plt.figure(figsize=(12, 5))
+    ax = plt.subplot(131)
+    bp = sns.barplot(data=df_hypo_comps[df_hypo_comps["Comparison"] == "SE-DP"],
+                     x=df_hypo_comps["Model"][df_hypo_comps["Comparison"] == "SE-DP"],
+                     y=df_hypo_comps["Tau"][df_hypo_comps["Comparison"] == "SE-DP"], width=.5,
+                     saturation=1., palette='cool', edgecolor='k', linewidth=4, errcolor='k', errwidth=0.)
+    for pt, patch in enumerate(bp.patches):
+        plt.errorbar(x=patch.get_x() + .25, y=patch.get_height(), yerr=df_hypo_comps['SE'].iloc[pt], c='k',
+                     linewidth=4.)
+    ax.set_ylim([-.2, .75])
+    ax.set_ylabel("CA1 Fit ($Tau$)", weight='bold')
+    ax.axhline(0.0, c='k', linewidth=5.)
+    ax.set_xticks(np.arange(len(feature_names)))
+    ax.set_xticklabels(feature_names, weight='bold', fontsize=26, rotation=90)
+    ax.set_xlabel("")
+    plt.setp(ax.spines.values(), color='k', linewidth=5)
+    ax = plt.subplot(132)
+    bp = sns.barplot(data=df_hypo_comps[df_hypo_comps["Comparison"] == "DE-SP"],
+                     x=df_hypo_comps["Model"][df_hypo_comps["Comparison"] == "DE-SP"],
+                     y=df_hypo_comps["Tau"][df_hypo_comps["Comparison"] == "DE-SP"], width=.5,
+                     saturation=1., palette='cool', edgecolor='k', linewidth=4, errcolor='k', errwidth=0.)
+    for pt, patch in enumerate(bp.patches):
+        plt.errorbar(x=patch.get_x() + .25, y=patch.get_height(), yerr=df_hypo_comps['SE'].iloc[pt], c='k',
+                     linewidth=4.)
+    ax.set_ylim([-.2, .75])
+    ax.set_ylabel("CA1 Fit ($Tau$)", weight='bold')
+    ax.axhline(0.0, c='k', linewidth=5.)
+    ax.set_xticks(np.arange(len(feature_names)))
+    ax.set_xticklabels(feature_names, weight='bold', fontsize=26, rotation=90)
+    ax.set_xlabel("")
+    plt.setp(ax.spines.values(), color='k', linewidth=5)
+    ax = plt.subplot(133)
+    bp = sns.barplot(data=df_hypo_comps[df_hypo_comps["Comparison"] == "DE-DP"],
+                     x=df_hypo_comps["Model"][df_hypo_comps["Comparison"] == "DE-DP"],
+                     y=df_hypo_comps["Tau"][df_hypo_comps["Comparison"] == "DE-DP"], width=.5,
+                     saturation=1., palette='cool', edgecolor='k', linewidth=4, errcolor='k', errwidth=0.)
+    for pt, patch in enumerate(bp.patches):
+        plt.errorbar(x=patch.get_x() + .25, y=patch.get_height(), yerr=df_hypo_comps['SE'].iloc[pt], c='k',
+                     linewidth=4.)
+    ax.set_ylim([-.2, .75])
+    ax.set_ylabel("CA1 Fit ($Tau$)", weight='bold')
+    ax.axhline(0.0, c='k', linewidth=5.)
+    ax.set_xticks(np.arange(len(feature_names)))
+    ax.set_xticklabels(feature_names, weight='bold', fontsize=26, rotation=90)
+    ax.set_xlabel("")
+    plt.setp(ax.spines.values(), color='k', linewidth=5)
+    plt.tight_layout()
+    plt.show()
+    return fig

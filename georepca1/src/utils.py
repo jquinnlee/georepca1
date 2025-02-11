@@ -1392,6 +1392,163 @@ def get_rsm_fit_bootstrap_verbose(rsm1, rsm2, n_deviations=100):
     return boot_fits
 
 
+def get_ca1_model_fits(rsm_parts_averaged, rsm_models, feature_types):
+    """
+    Wrapper for get_rsm_fit_bootstrap to calculate model fits to dataset and organize into dataframe
+    :param rsm_parts_averaged: averaged rsm result across animals and sequences from ca1 dataset
+    :param rsm_models: model rsms stacked to fit against ca1 representation
+    :param feature_types: list of feature types stacked in rsm_models (e.g., "PC", "GC2PC", etc...).
+    :return: dataframe with bootstrapped similarity comparisons between each model and ca1 data
+    """
+    cols = ["Model", "Fit", "SE", "P value"]
+    df_agg_bootstrap = pd.DataFrame(data=np.zeros([len(feature_types), len(cols)]) * np.nan, columns=cols)
+    for f, feature_type in tqdm(enumerate(feature_types),
+                                desc='Fitting models to aggregate data with bootstrap procedure',
+                                position=0, leave=True):
+        fit, se, p_val = get_rsm_fit_bootstrap(rsm_parts_averaged,
+                                               rsm_models[feature_type]['averaged'])
+        df_agg_bootstrap.iloc[f] = np.hstack((feature_type, fit, se, p_val))
+    df_agg_bootstrap.iloc[:, 1:] = df_agg_bootstrap.iloc[:, 1:].astype(float)
+    # Measure one-way anova of model effects
+    cols = ["Model", "Fits"]
+    n_bootstrap = 100
+    df_agg_bootstrap_ANOVA = pd.DataFrame(data=np.zeros([len(feature_types) * n_bootstrap, len(cols)]), columns=cols)
+    c = 0
+    for f, feature_type in tqdm(enumerate(feature_types),
+                                desc='Fitting models to aggregate data with bootstrap procedure',
+                                position=0, leave=True):
+        fits = get_rsm_fit_bootstrap_verbose(rsm_parts_averaged, rsm_models[feature_type]['averaged'], n_bootstrap)
+        df_agg_bootstrap_ANOVA.iloc[c:c+n_bootstrap, :] = np.vstack((np.tile(f, n_bootstrap), fits)).T
+        c += n_bootstrap
+    df_agg_bootstrap_ANOVA.iloc[:, 1] = df_agg_bootstrap_ANOVA.iloc[:, 1].astype(float)
+    formula = 'Fits ~ C(Model)'
+    lm = ols(formula, df_agg_bootstrap_ANOVA).fit()
+    print(f"One-way ANOVA for effect of model on predicting CA1 representation: \n{anova_lm(lm)}")
+    return df_agg_bootstrap
+
+
+def get_ca1_model_fits_sequences(rsm_parts_ordered, rsm_models, feature_types, feature_names):
+    """
+    Wrapper for get_rsm_fit_bootstrap to calculate model fits to dataset across geometric sequences and organize into
+    dataframe
+    :param rsm_parts_ordered: ordered rsm result across animals and sequences from ca1 dataset
+    :param rsm_models: model rsms stacked to fit against ca1 representation
+    :param feature_types: list of feature types stacked in rsm_models (e.g., "PC", "GC2PC", etc...).
+    :param feature_names: names of features used for subsequent plotting
+    :return: dataframe with bootstrapped similarity comparisons between each model and ca1 data
+    """
+    rsm_parts_sequences = np.nanmean(rsm_parts_ordered, axis=1)
+    n_seq = rsm_parts_sequences.shape[0]
+    cols = ["Model", "Fit", "Sequence", "SE"]
+    df_agg_bootstrap = pd.DataFrame(data=np.zeros([len(feature_types) * n_seq, len(cols)]) * np.nan, columns=cols)
+    count = 0
+    for f, feature_type in tqdm(enumerate(feature_types),
+                                desc='Fitting models to aggregate data with bootstrap procedure',
+                                position=0, leave=True):
+        for s in range(n_seq):
+            fit, se, p_val = get_rsm_fit_bootstrap(rsm_parts_sequences[s],
+                                                   rsm_models[feature_type]['averaged'])
+            df_agg_bootstrap.iloc[count] = np.hstack((feature_names[f], fit, s, se))
+            count += 1
+    df_agg_bootstrap.iloc[:, 1:] = df_agg_bootstrap.iloc[:, 1:].astype(float)
+    # verbose bootstrap for one-way anova of model effects
+    cols = ["Model", "Sequence", "Fits"]
+    n_bootstrap = 100
+    df_agg_bootstrap_ANOVA = pd.DataFrame(data=np.zeros([len(feature_types) * n_bootstrap * n_seq, len(cols)]),
+                                          columns=cols)
+    c = 0
+    for f, feature_type in tqdm(enumerate(feature_types),
+                                desc='Fitting models to aggregate data with bootstrap procedure',
+                                position=0, leave=True):
+        for s in range(n_seq):
+            fits = get_rsm_fit_bootstrap_verbose(rsm_parts_sequences[s], rsm_models[feature_type]['averaged'],
+                                                 n_bootstrap)
+
+            df_agg_bootstrap_ANOVA.iloc[c:c + n_bootstrap, :] = np.vstack(
+                (np.tile(f, n_bootstrap), np.tile(s, n_bootstrap),
+                 fits)).T
+            c += n_bootstrap
+    df_agg_bootstrap_ANOVA.iloc[:, 1:] = df_agg_bootstrap_ANOVA.iloc[:, 1:].astype(float)
+    formula = 'Fits ~ C(Model) + C(Sequence) + C(Model):C(Sequence)'
+    lm = ols(formula, df_agg_bootstrap_ANOVA).fit()
+    print(f"Two-way ANOVA for effect of model on predicting CA1 representation across sequences: \n{anova_lm(lm)}")
+    return df_agg_bootstrap, n_seq
+
+
+def get_ca1_model_fit_subsets(rsm_parts_animals, rsm_parts_averaged, rsm_models, feature_types, feature_names):
+    # create boolean masks for matching and nonmatching partitions allocentrically using cannon labels
+    cannon_labels = rsm_parts_animals["cannon_labels"]
+    parts_mesh = np.meshgrid(cannon_labels[:, 1].astype(float), cannon_labels[:, 1].astype(float))
+    parts_match = parts_mesh[0] == parts_mesh[1]
+    parts_nonmatch = parts_mesh[0] != parts_mesh[1]
+    # Break down non-match to same and different environments
+    same_env_mesh = np.meshgrid(cannon_labels[:, 0], cannon_labels[:, 0])
+    parts_nonmatch_senv = same_env_mesh[0] == same_env_mesh[1]
+    parts_nonmatch_senv[:9, 90:] = False
+    parts_nonmatch_senv[90:, :9] = False
+    parts_nonmatch_senv[np.eye(parts_nonmatch_senv.shape[0]).astype(bool)] = False
+    parts_nonmatch_denv = deepcopy(parts_nonmatch)
+    parts_nonmatch_denv[parts_nonmatch_senv] = False
+    parts_match_denv = deepcopy(parts_match)
+    parts_match_denv[np.eye(parts_match.shape[0]).astype(bool)] = False
+    # compare parts_nonmatch_senv (diff parts, same env), parts_match_denv (diff env, same parts), and parts_nonmatch_
+    # denv (diff env, diff parts) to each of the hypotheses
+    rsm_mask = ~np.isnan(rsm_parts_averaged)
+    rsm_mask[np.tri(rsm_mask.shape[0], k=0).astype(bool)] = False
+
+    # how well does each hypothesis explain different partitions, same environment?
+    comp_masks = np.stack((np.logical_and(rsm_mask, parts_nonmatch_senv), np.logical_and(rsm_mask, parts_match_denv),
+                           np.logical_and(rsm_mask, parts_nonmatch_denv)))
+    cols = ["Model", "Comparison", "Tau", "SE", "P value"]
+    df_hypo_comps = pd.DataFrame(data=np.zeros([comp_masks.shape[0] * len(feature_types), len(cols)]), columns=cols)
+    c = 0
+    for m, mask in enumerate(comp_masks):
+        temp = deepcopy(rsm_parts_averaged)
+        temp[~mask] = np.nan
+        for f, feature_type in enumerate(feature_types):
+            temp_model = deepcopy(rsm_models[feature_type]['averaged'])
+            temp_model[~mask] = np.nan
+            fit, se, p_val = get_rsm_fit_bootstrap(temp.T, temp_model.T)
+            if m == 0:
+                comp_name = "SE-DP"
+            elif m == 1:
+                comp_name = "DE-SP"
+            elif m == 2:
+                comp_name = "DE-DP"
+            df_hypo_comps.iloc[c] = np.hstack((feature_names[f], comp_name, fit, se, p_val))
+            c+=1
+    df_hypo_comps["Tau"] = df_hypo_comps["Tau"].astype(float)
+    df_hypo_comps["SE"] = df_hypo_comps["SE"].astype(float)
+
+    n_bootstrap = 100
+    cols = ["Model", "Comparison", "Tau"]
+    df_hypo_comps_verbose = pd.DataFrame(data=np.zeros([comp_masks.shape[0] * len(feature_types) * n_bootstrap, len(cols)]),
+                                 columns=cols)
+    c = 0
+    for m, mask in enumerate(comp_masks):
+        temp = deepcopy(rsm_parts_averaged)
+        temp[~mask] = np.nan
+        for f, feature_type in enumerate(feature_types):
+            temp_model = deepcopy(rsm_models[feature_type]['averaged'])
+            temp_model[~mask] = np.nan
+            fits = get_rsm_fit_bootstrap_verbose(temp.T, temp_model.T,
+                                                 n_bootstrap)
+            if m == 0:
+                comp_name = "SE-DP"
+            elif m == 1:
+                comp_name = "DE-SP"
+            elif m == 2:
+                comp_name = "DE-DP"
+            df_hypo_comps_verbose.iloc[c:c + n_bootstrap] = np.vstack((np.tile(feature_names[f], n_bootstrap),
+                                                               np.tile(comp_name, n_bootstrap), fits)).T
+            c += n_bootstrap
+    df_hypo_comps_verbose["Tau"] = df_hypo_comps_verbose["Tau"].astype(float)
+    formula = 'Tau ~ C(Model) + C(Comparison) + C(Model):C(Comparison)'
+    lm = ols(formula, df_hypo_comps_verbose).fit()
+    print(f"Two-way ANOVA for effect of model and comparison type on predicting CA1 representation: \n{anova_lm(lm)}")
+    return df_hypo_comps
+
+
 def get_rsm_partitioned_sequences_models(animals, p, file_ext='rsm_partitioned', agg=True):
     '''
 
@@ -2682,7 +2839,7 @@ def get_bvc2pc_maps(animal, p, nPCs = 500, compute_rsm=False):
 def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.)*10**(-3),
                       norm_within_day=True, threshold=0.8, timestep=1, n_pretrain=3):
     """
-
+    Compute successor features from desired basis set, temporal discount and learning rate parameters.
     :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
     :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
     :param basis: model basis set to use as inputs to generate sucessor features (e.g., "PC" or "BVC").
