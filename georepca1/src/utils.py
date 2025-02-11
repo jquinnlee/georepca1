@@ -1539,11 +1539,19 @@ def get_model_rsm(animals, p, feature_type):
 ########################################################################################################################
 # Bayesian decoding of animal position within sessions
 def fit_decoder(behav, traces, feature_max, temporal_bin_size=3):
+    """
+    Fit naive Bayes decoder to temporally binned behavioral and calcium trace data.
+    :param behav: x-y position of animal shape n frames (row) by n features (x and y position in columns)
+    :param traces: calcium trace data shape n frames (row) by n cells (column)
+    :param feature_max: maximum value for behavioral features (environment size)
+    :param temporal_bin_size: number of frames to average in temporal binning
+    :return: naive Bayes model fit to data
+    """
     # temporally bin trace and behavioral data
     pooling = AvgPool1d(kernel_size=temporal_bin_size, stride=temporal_bin_size)
-    behav, traces = pooling(torch.tensor(behav.T)).numpy().astype(int).T,\
-                    pooling(torch.tensor(gaussian_filter1d(traces, sigma=temporal_bin_size, axis=0).T)).numpy().T
-    # determine number of samples and behavioral features
+    behav, traces = pooling(torch.tensor(behav.T)).numpy().astype(int).T, \
+        pooling(torch.tensor(gaussian_filter1d(traces, sigma=temporal_bin_size, axis=0).T)).numpy().T
+    # determine number of samples (time points) and behavioral features
     n_samples, n_features = behav.shape[0], behav.shape[1]
     # transform behavioral data to one-hot embedding
     onehot_behav = np.zeros(n_samples)
@@ -1552,14 +1560,27 @@ def fit_decoder(behav, traces, feature_max, temporal_bin_size=3):
         empty_map[behav[i][0], behav[i][1]] += 1
         onehot_behav[i] = np.where(empty_map.flatten())[0]
         empty_map *= 0
-    # initialize model with flat priors
+    # initialize Gaussian naive Bayes model with flat priors
     n_classes = np.unique(onehot_behav).shape[0]
     model = GaussianNB(priors=np.ones(n_classes)/n_classes)
+    # fit the model to temporally binned dataset
     model.fit(traces, onehot_behav)
     return model
 
 
 def test_decoder(model, behav, traces, feature_max, bin_down, temporal_bin_size=3):
+    """
+    Test (predict) behavioral data from calcium traces with fit naive Bayes decoding model
+    :param model: fit naive Bayes model
+    :param behav: x-y position of animal shape n frames (row) by n features (x and y position in columns)
+    :param traces: calcium trace data shape n frames (row) by n cells (column)
+    :param feature_max: maximum value for behavioral features (environment size)
+    :param bin_down: spatial bin size for x and y position
+    :param temporal_bin_size: number of frames to average in temporal binning
+    :return: behav - temporally binned behavioral data; predictions_transform - transformed predictions from onehot
+    embedding; err_squared - squared distance between actual and predicted position; predictions_map - distance map of
+    predicted and actual locations for x-y position
+    """
     # temporally bin behav data
     pooling = AvgPool1d(kernel_size=temporal_bin_size, stride=temporal_bin_size)
     behav, traces = pooling(torch.tensor(behav.T)).numpy().astype(int).T,\
@@ -1588,40 +1609,44 @@ def test_decoder(model, behav, traces, feature_max, bin_down, temporal_bin_size=
 
 def decode_position_within(behav, traces, maps, n_bins=15, fps=30, v_filt_size=5,
                            v_thresh=5, cell_threshold=5, buffer=1e-15, n_fold=5):
-    '''
-    Provide behav and trace data with shape frames x features x days
-    returns n_fold mean distance as error metric, and map of distance error for each behavioral bin
-    '''
-
+    """
+    Decode animal temporal and spatially binned position with k-fold cross validation and naive Bayesian method.
+    :param behav: x-y position of animal shape n frames (row) by n features (x and y position in columns)
+    :param traces: calcium trace data shape n frames (row) by n cells (column)
+    :param maps: pre-computed event rate maps from calcium and position data
+    :param n_bins: number of spatial bins for x and y position
+    :param fps: frames per second of original data
+    :param v_filt_size: size of temporal window of filter used for velocity estimates
+    :param v_thresh: threshold for velocity to be included in fitting and predictions
+    :param cell_threshold: threshold for activity sparsity of cells to be included in fitting and predictions
+    :param buffer: buffer size for rounding of position
+    :param n_fold: number of cross validation folds
+    :return: distances - Euclidean error in position decoding at each binned time point, np.sqrt(mse) - spatial map of
+    average Euclidean error between actual and decoded position, imse - inverse mse, coherence_maps - coherence map of
+    decoding errors
+    """
     # make a deepcopy of behav and trace data as to not change original inputs
     behav = deepcopy(behav)
-
+    traces = deepcopy(traces)
     # bin down behavioural data
     behav_max = behav.max(axis=0).max(axis=1)
     bin_down = (behav_max.max() + buffer) / n_bins
     behav /= bin_down
-
     # determine maxima of behavioral features across all days (needed for across-day training and decoding)
     behav_max = (behav.max(axis=0).max(axis=1) + buffer).astype(int)
-
     # grab the number of days to iterate across, and initialize some variables to return and use as function params
     n_days = behav.shape[2]
     n_cells = traces.shape[1]
-
     # distances will contain the distance errors for model predictions
     distances = np.zeros([n_days, n_fold])
-
     # initialize velocity and cell idx for selecting data based on criteria
     cell_idx = np.zeros([n_days, n_cells]).astype(bool)
     vel_idx = np.zeros([n_days, behav.shape[0]]).astype(bool)
-
     # create template maps for all days to find nearest x-y bins for dist_maps after predictions are made (cleaning)
     temp_maps = np.nansum(maps, axis=2).astype(bool)
-
     # initialize distance maps to show distance between actual and decoded position in each bin
     mse, imse, coherence_maps = np.zeros_like(temp_maps).astype(float), np.zeros_like(temp_maps).astype(float),\
         np.zeros_like(temp_maps).astype(float)
-
     for d in tqdm(range(n_days), desc=f'Performing {n_fold}-fold cross-validated position decoding'):
         vel_idx[d, 1:] = gaussian_filter1d(np.linalg.norm((behav[1:, :, d] - behav[:-1, :, d]) * fps, axis=1),
                                            axis=0, sigma=v_filt_size) > (v_thresh / bin_down)
@@ -1630,7 +1655,6 @@ def decode_position_within(behav, traces, maps, n_bins=15, fps=30, v_filt_size=5
         target_traces = traces[:, cell_idx[d], d][vel_idx[d]]
         kf = KFold(n_splits=n_fold)
         kf.get_n_splits(target_traces)
-
         for fold, (train_index, test_index) in enumerate(kf.split(target_traces)):
             # initialize maps to plot distance errors onto behavioural map
             count_map, err_squared_map, prob_map = np.zeros_like(temp_maps[:, :, d]).astype(int), \
@@ -1645,8 +1669,7 @@ def decode_position_within(behav, traces, maps, n_bins=15, fps=30, v_filt_size=5
             # return the temporally binned behavioral data (actual), the predictions, and the distance as error metric
             actual, predictions, err_squared, predictions_dist = test_decoder(GNB_model, behav_test, traces_test,
                                                                               behav_max, bin_down)
-
-            # clean the actual and predicted position data using temp_maps by finding the nearest bins in temp_maps
+            # clean the actual and predicted position data using temp_maps
             true_bins = np.array(np.argwhere(temp_maps[:, :, d]))
             for i in range(actual.shape[0]):
                 actual_diff, pred_diff = true_bins - np.array(actual[i]), true_bins - np.array(predictions[i])
@@ -1659,7 +1682,6 @@ def decode_position_within(behav, traces, maps, n_bins=15, fps=30, v_filt_size=5
             for x in range(predictions_dist.shape[0]):
                 for y in range(predictions_dist.shape[1]):
                     predictions_dist[x, y] = (count_map + 1).sum() * predictions_dist[x, y] / (count_map + 1)
-                    # nan_mask = ~np.isnan(predictions_dist[x, y].flatten())
                     if np.any(predictions_dist[x, y].astype(bool)):
                         smooth_dist = gaussian_filter(predictions_dist[x, y], sigma=1.5)
                         r_, _ = pearsonr(smooth_dist.flatten(), predictions_dist[x, y].flatten())
@@ -1667,10 +1689,8 @@ def decode_position_within(behav, traces, maps, n_bins=15, fps=30, v_filt_size=5
                         coherence_maps[x, y, d] = coherence
                     else:
                         coherence_maps[x, y, d] = np.nan
-
             mse[:, :, d] = err_squared_map / count_map
             imse[:, :, d] = 1 / err_squared_map
-
     return distances, np.sqrt(mse), imse, coherence_maps
 
 
@@ -1678,16 +1698,15 @@ def decode_position_within(behav, traces, maps, n_bins=15, fps=30, v_filt_size=5
 # Methods to build dataframes for plotting and stats from numpy arrays and nested dictionaries
 def get_all_shr_pvals(animals, p):
     '''
-    function will collect all pre-calculated p values for every cell across animals into single dataframe
-    for subsequent analysis and plotting
+    Generate dataframe for plotting and statistics with split-half reliability values for all cells across animals
     :param animals: list of animals included to collect pre-calculated p values
     :param p: path to pre-calculated p values
-    :return: df_pvals: pandas dataframe indicating SHR p value for each cell and day
+    :return: df_pvals - dataframe indicating split-half reliability p value for each cell and day
     '''
     p_results = os.path.join(p, "results")
     group_p_vals = {}
     animal_days = np.zeros(len(animals)) * np.nan
-    # use cell num counter for later initialization of the pvals mat across animals and days
+    # use cell num counter for later initialization of the p-vals mat across animals and days
     total_cells = 0
     for a, animal in enumerate(animals):
         group_p_vals[animal] = joblib.load(os.path.join(p_results, f'{animal}_shr'))
@@ -1713,6 +1732,12 @@ def get_all_shr_pvals(animals, p):
 
 
 def get_all_decoding_within(animals, p):
+    """
+    Generate dataframe for plotting and statistics of within-session decoding error for all animals and all sessions
+    :param animals: list of animals included to collect pre-calculated decoding errors
+    :param p: path to pre-calculated p values
+    :return: df_decoding - dataframe containing average Euclidean decoding errors for animal position across days
+    """
     p_results = os.path.join(p, "results")
     group_decoding = joblib.load(os.path.join(p_results, "within_decoding"))
     n_animals = len(list(group_decoding.keys()))
@@ -1734,6 +1759,11 @@ def get_all_decoding_within(animals, p):
 ########################################################################################################################
 # Heuristic model simulations
 def get_euclidean_similarity_partitioned(envs):
+    """
+    Simulate heuristic model of Euclidean similarity between all 3x3 partitions across pairs of environment geometries
+    :param envs: list of enviornment geometries to compute similarity (e.g., "square", "o", "+", etc...).
+    :return: normalized Euclidean distances between all partitions across all environment pairs
+    """
     # represent every partition in the environment with a one in the two-dim matrix
     euc_parts = []
     for e, env in enumerate(envs):
@@ -1763,6 +1793,12 @@ def get_euclidean_similarity_partitioned(envs):
 
 
 def get_boundary_similarity_partitioned(envs):
+    """
+    Simulate heuristic model of hamming distances between all local boundary conditions between all 3x3 partitions
+    across pairs of environment geometries
+    :param envs: list of enviornment geometries to compute similarity (e.g., "square", "o", "+", etc...).
+    :return: similarity of boundary conditions between all partitions across all environment pairs
+    """
     # represent every partition in the environment with its boundary conditions (1 or 0)
     boundary_conditions = {"envs": envs, "bounds": []}
     for env in envs:
@@ -1797,6 +1833,15 @@ def get_boundary_similarity_partitioned(envs):
 
 
 def get_traj_similarity_partitioned(animals, envs, p):
+    """
+    Simulate heuristic model predictions for similarity of tranejectories across binned spatial locations of animals in
+    each environment between all 3x3 partitions across pairs of geometries
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param envs: list of enviornment geometries to compute similarity (e.g., "square", "o", "+", etc...).
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :return: transition_similarity - trajectoral similarity calculated as the similarity of transition matrices between
+    all 3x3 partitions across pairs of geometries
+    """
     # first build out transition matrices for each animal
     transition_matrices = {}
     n_bins = 15
@@ -1823,43 +1868,47 @@ def get_traj_similarity_partitioned(animals, envs, p):
         for e, env in enumerate(envs):
             T_shapes[a, e] = transition_matrices[animal]["T_shapes"][e]
     T_shapes = np.nanmean(T_shapes, axis=0).squeeze()
-
-    # in the final step of formatting the transition matrix, we need to organize it by partition
+    # in the final step of formatting the transition matrix organize by partition
     part_labels = np.flipud(np.array([[0, 1, 2], [3, 4, 5], [6, 7, 8]]).T)  # reordered to match rate map orientation
     pixel_labels = part_labels[:, :, np.newaxis].repeat(25, axis=2).reshape(3, 3, 5, 5).transpose(0, 2, 1, 3).reshape(
         15,
         15).ravel()
 
-    # now we have labels for the pixels, let's walk through each shape, and pull out the target partition
+    # now iterate through each shape and pull out the target partition
     transition_parts = []
     for T_shape in T_shapes:
         for part in part_labels.ravel():
             temp = deepcopy(T_shape)
             vals = temp[pixel_labels == part, pixel_labels == part]
             transition_parts.append(vals)
-
+    # compute similarity of partitioned transition matrices
     transition_similarity = np.zeros([99, 99]) * np.nan
     for i, p1 in enumerate(transition_parts):
         for j, p2 in enumerate(transition_parts):
             transition_similarity[i, j] = pearsonr(p1, p2)[0]
     return transition_similarity
 
+
 ########################################################################################################################
 # RatInABox (riab) model simulations
 def deform_environment(Env, shape):
+    """
+    Deform environment geometry by inserting walls to riab environment as in Lee et al. (2025) study
+    :param Env: riab environment to deform by addition of walls
+    :param shape: shape of environment as a string (e.g., "glenn", "o", etc...).
+    :return: None (Env object is modified in-place)
+    """
     # Add walls to riab environment to deform geometry as per experiment
     if shape == 'glenn':
         Env.add_wall([[.25, 0], [.25, .25]])
         Env.add_wall([[.25, .25], [0, .25]])
         Env.add_wall([[.5, .5], [.5, .75]])
         Env.add_wall([[.5, .5], [.75, .5]])
-
     elif shape == 'o':
         Env.add_wall([[.25, .25], [.25, .5]])
         Env.add_wall([[.25, .5], [.5, .5]])
         Env.add_wall([[.5, .5], [.5, .25]])
         Env.add_wall([[.5, .25], [.25, .25]])
-
     elif shape == 'bit donut':
         Env.add_wall([[0., 0.25], [0.25, 0.25]])
         Env.add_wall([[0.25, 0.25], [0.25, 0]])
@@ -1867,12 +1916,10 @@ def deform_environment(Env, shape):
         Env.add_wall([[0.25, 0.5], [0.5, 0.5]])
         Env.add_wall([[0.5, 0.5], [0.5, 0.25]])
         Env.add_wall([[0.5, .25], [0.25, 0.25]])
-
     elif shape == 'u':
         Env.add_wall([[.25, .25], [.75, .25]])
         Env.add_wall([[.25, .25], [.25, .5]])
         Env.add_wall([[.25, .5], [.75, .5]])
-
     elif shape == '+':
         Env.add_wall([[.25, 0.], [.25, .25]])
         Env.add_wall([[.25, .25], [0., .25]])
@@ -1882,17 +1929,14 @@ def deform_environment(Env, shape):
         Env.add_wall([[.5, .5], [.75, .5]])
         Env.add_wall([[.5, .25], [.75, .25]])
         Env.add_wall([[.5, .25], [.5, 0.]])
-
     elif shape == 't':
         Env.add_wall([[0.00, 0.25], [0.25, 0.25]])
         Env.add_wall([[0.25, 0.25], [0.25, 0.75]])
         Env.add_wall([[0.50, 0.75], [0.50, 0.25]])
         Env.add_wall([[0.50, 0.25], [0.75, 0.25]])
-
     elif shape == 'l':
         Env.add_wall([[0.25, 0.], [0.25, .5]])
         Env.add_wall([[0.25, .5], [0.75, .5]])
-
     elif shape == 'i':
         Env.add_wall([[.25, .25], [0., .25]])
         Env.add_wall([[.25, .25], [.25, .5]])
@@ -1900,13 +1944,26 @@ def deform_environment(Env, shape):
         Env.add_wall([[.5, .25], [.75, .25]])
         Env.add_wall([[.5, .25], [.5, .5]])
         Env.add_wall([[.5, .5], [.75, .5]])
-
     elif shape == 'rectangle':
         Env.add_wall([[.25, .0], [0.25, .75]])
 
 
 def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.28, 0.73),
                    fps=30, env_size=75, bases=['GC', 'BVC'], random_seed=2023):
+    """
+    Simulate a "basis set" of spatial features following animal trajectories with riab toolbox. See toolbox for details:
+    https://github.com/RatInABox-Lab/RatInABox
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param n_features: number of features to simulate for each basis set (i.e., number of GCs, BVCs, PCs).
+    :param field_width: width of gaussian place fields to simulate in meters
+    :param grid_scale: grid scale for simulated grid cells, default is logarithmic scale from Solstad et al. (2006)
+    :param fps: frames per second of original dataset
+    :param env_size: size of environment in cm
+    :param bases: list of bases to simulate (e.g., ["GC", "BVC", "PC"])
+    :param random_seed: random seed for reproducibility
+    :return: None (simulated data are saved to p/results/riab folder)
+    """
     p_data = os.path.join(p, "data")
     p_results = os.path.join(p, "results")
     p_models = os.path.join(p_results, 'riab')
@@ -1917,9 +1974,8 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
         os.mkdir(p_models)
     os.chdir(p_models)
     for animal in animals:
-        # minmax scale position to match RAIB environments in meters (0.75 m)
+        # minmax scale position to match riab environments in meters (0.75 m)
         position = env_size * 0.01 * (behav_dict[animal]['position'] / behav_dict[animal]['position'].max())
-
         envs = behav_dict[animal]['envs']
         n_days = position.shape[0]
         n_steps = position.shape[2]
@@ -1943,13 +1999,11 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
                            'envs': envs,
                            'position': position,
                            'firing_rates': np.zeros([n_days, n_features, n_steps]) * np.nan}
-
         if 'HDC' in bases:
             HDC_dict = {'animal': animal,
                        'envs': envs,
                        'position': position,
                        'firing_rates': np.zeros([n_days, n_features, n_steps]) * np.nan}
-
         for d, env_name in tqdm(enumerate(envs), desc='Simulating spike data across days',
                                 position=0, leave=True):
             # Initialise environment
@@ -1957,10 +2011,8 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
                 params={'aspect': 1,
                         'scale': .75,
                         'dimensionality': '2D'})
-
             # Deform geometry according to what animal experienced
             deform_environment(Env, env_name)
-
             # Add agent and neuron types
             if d == 0:
                 Ag = Agent(Env, params={"dt": 1/fps})
@@ -1990,7 +2042,6 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
                                                "min_fr": 0,
                                                "max_fr": 1,
                                                "name": "GridCells"})
-
                 if 'BVC' in bases:
                     # set random seed to preserve systematic randomness across functions
                     np.random.seed(random_seed)
@@ -2009,7 +2060,6 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
                                                           "max_fr": 1,
                                                           "name": "BoundaryVectorCells",
                                                           "color": "C2"})
-
                 if "egoBVC" in bases:
                     # set random seed to preserve systematic randomness across functions
                     np.random.seed(random_seed)
@@ -2027,7 +2077,6 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
                                                           "max_fr": 1,
                                                           "name": "BoundaryVectorCells",
                                                           "color": "C2"})
-
                 if 'HDC' in bases:
                     # set random seed to preserve systematic randomness across functions
                     np.random.seed(random_seed)
@@ -2038,7 +2087,6 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
                                                      "max_fr": 1,
                                                      "angular_spread_degrees": 45,
                                                      "name": "HeadDirectionCells"})
-
             else:
                 Ag.Environment = Env
 
@@ -2127,22 +2175,39 @@ def simulate_bases(animals, p, n_features=200, field_width=0.15, grid_scale=(0.2
             del HDC_dict
 
 
-def load_bases(animal, p, cell_types=["GC", "BVC", "PC"]):
+def load_bases(animal, p, bases=["GC", "BVC", "PC"]):
+    """
+    Load data from simulated basis set (or sets) for a target animal.
+    :param animal: animal ID as string (e.g., "QLAK-CA1-08")
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param bases: list of bases to load into nested dictionary.
+    :return: dictionary of simulated data for each basis set in bases
+    """
     # load basis set from target cell type
     p_models = os.path.join(p, "results", "riab")
     basis_set = {}
-    for cell_type in cell_types:
-        basis_set[cell_type] = {}
-        preload = joblib.load(os.path.join(p_models, f'{animal}_{cell_type}_simulation'))
+    for basis in bases:
+        basis_set[basis] = {}
+        preload = joblib.load(os.path.join(p_models, f'{animal}_{basis}_simulation'))
         for key in list(preload.keys()):
             if key != 'animal':
-                basis_set[cell_type][key] = preload[key][:]
+                basis_set[basis][key] = preload[key][:]
         del preload
     print(f'{animal} set loaded')
     return basis_set
 
 
 def get_model_maps(animals, p, feature_types=['BVC2PC'], n_bins=15, compute_rsm=False):
+    """
+    Create rate maps and optionally compute representational similarity matrix of rate maps with 3x3 partitioned
+    environments from simulated firing of model features generated with riab.
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param feature_types: list of model feature types as strings (e.g., "GC2PC", "BVC2PC", etc...).
+    :param n_bins: number of spatial bins for rate maps in x and y dimension
+    :param compute_rsm: whether to compute representational similarity of model features from rate maps
+    :return: None (rate maps and representational similarity matrix saved in p/results/riab folder).
+    """
     # wrapper function for rate map generation from riab model simulation
     # simply adapted to dictionary specific fields of simulation data
     behav_dict = joblib.load(os.path.join(p, "data", 'behav_dict'))
@@ -2178,8 +2243,16 @@ def get_model_maps(animals, p, feature_types=['BVC2PC'], n_bins=15, compute_rsm=
         del simulation
 
 
-# Model place cells a la Solstad et al. (2006)
 def get_solstad_pc(n_grids=50, gridscale=(0.28, 0.73), sigma=.12, threshold=False):
+    """
+    Model individual place cells as in Solstad et al. (2006) using riab toolbox.
+    :param n_grids: number of grid cells to use as basis for each place cell
+    :param gridscale: grid scale for grid cells. default is logarithmix as in Solstad et al. (2006).
+    :param sigma: constant used for place cell calculation from grid inputs.
+    :param threshold: minimum threshold for place cells to fire in model.
+    :return: rate_map - rate map for individual place cell from riab; PC - riab place cell object (feed forward layer)
+    """
+    # Model place cells a la Solstad et al. (2006)
     Env = Environment(params={'aspect': 1, 'scale': .75, 'dimensionality': '2D'})
     Ag = Agent(Env)
     nPCs = 10
@@ -2212,14 +2285,35 @@ def get_solstad_pc(n_grids=50, gridscale=(0.28, 0.73), sigma=.12, threshold=Fals
 
 
 def get_solstad_pc_population(n_pcs=500, n_grids=50, gridscale=(0.28, 0.73), sigma=0.12, threshold=False):
+    """
+    Generate a population of simulated place cells as in Solstad et al. (2006) using riab toolbox and get_solstad_pc
+    :param n_pcs: number of place cells to simulate
+    :param n_grids: number of grid cells to provide input for each place cell
+    :param gridscale: grid scale for grid cells. default is logarithmix as in Solstad et al. (2006).
+    :param sigma: constant used for place cell calculation from grid inputs.
+    :param threshold: minimum threshold for place cells to fire in model.
+    :return: array of n place cells
+    """
     PCs = [None] * n_pcs
     for p in tqdm(range(n_pcs), desc="Simulating place cell rate maps a la Solstad et al. (2006)"):
         PCs[p], _ = get_solstad_pc(n_grids, gridscale, sigma, threshold)
     return np.array(PCs)
 
 
-def get_gc2pc_maps(animals, p, pc_receptive_fields, threshold=True, n_pc = 200, buffer = 0.05, n_bins = 15,
+def get_gc2pc_maps(animals, p, pc_receptive_fields, threshold=True, n_pc=200, buffer=0.05, n_bins=15,
                    compute_rsm=False):
+    """
+    Generate rate maps from PC receptive fields calculated as in Solstad et al. (2006) following animal trajectories
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param pc_receptive_fields: place cell population receptive fields simulated with get_solstad_pc_population
+    :param threshold: whether threshold was used to calculate receptive fields.
+    :param n_pc: number of place cells simulated
+    :param buffer: buffer size for rounding animal position in generation of rate maps
+    :param n_bins: number of bins in x and y dimension for rate maps
+    :param compute_rsm: whether to compute representational similarity matrix from simulated rate maps
+    :return: None (PC model rate maps and representational similarity matrix saved in p/results/riab).
+    """
     behav_dict = joblib.load(os.path.join(p, "data", "behav_dict"))
     for animal in animals:
         n_days = behav_dict[animal]["envs"].shape[0]
@@ -2227,7 +2321,7 @@ def get_gc2pc_maps(animals, p, pc_receptive_fields, threshold=True, n_pc = 200, 
         subsample_idx = np.random.choice(np.arange(pc_receptive_fields.shape[0]), n_pc, replace=False)
         pc_traces = np.zeros([n_days, n_pc, len_recording])
         pc_rate_maps = {"smoothed": np.zeros([n_days, n_pc, n_bins, n_bins]),
-                                "unsmoothed": np.zeros([n_days, n_pc, n_bins, n_bins])}
+                        "unsmoothed": np.zeros([n_days, n_pc, n_bins, n_bins])}
         for d in tqdm(range(n_days), desc="Generating rate maps from receptive fields across days"):
             for t, (y, x) in enumerate(behav_dict[animal]["position"][d].T):
                 pc_traces[d, :, t] = pc_receptive_fields[subsample_idx,
@@ -2256,12 +2350,27 @@ def get_gc2pc_maps(animals, p, pc_receptive_fields, threshold=True, n_pc = 200, 
 
 
 def expand_3x3_rfdim(mat, part_size=25):
+    """
+    Expands 3x3 matrix of environments to represent true partition size of environment in cm
+    :param mat: 3x3 matrix representation of environment generated with get_env_mat
+    :param part_size: actual size in cm of environment partitions
+    :return: matrix with expanded dimensions to reflect true location in cm for each partition
+    """
     mat = mat[:, :, np.newaxis, np.newaxis].repeat(part_size, axis=-2).repeat(part_size, axis=-1)\
             .transpose(0, 2, 1, 3).reshape(part_size*3, part_size*3)
     return mat
 
 
 def generate_boundary_fields(envs, env_size=75, thresh=0.8, plot_maps=False, binarize=True):
+    """
+    Generate four boudary fields as in Keinath et al. (2018) with riab to detect when animal is near boundary.
+    :param envs: list of environments to create boundary fields for (e.g., "square", "o", "+", etc...).
+    :param env_size: actual size of environment in cm
+    :param thresh: binarize threshold for boundary field to consider animal is located at a boundary
+    :param plot_maps: option to plot receptive fields maps for each environment
+    :param binarize: option to binarize receptive fields.
+    :return: receptive fields for each boundary as in Keinath et al. (2018)
+    """
     boundary_fields = {}
     for env in tqdm(envs, desc="Creating boundary fields for all geometries", position=0, leave=True):
         Env = Environment(params={'aspect': 1, 'scale': .75, 'dimensionality': '2D'})
@@ -2294,6 +2403,11 @@ def generate_boundary_fields(envs, env_size=75, thresh=0.8, plot_maps=False, bin
 
 
 def generate_rf_shift_mask(envs):
+    """
+    Generate mask for shifting receptive fields in each environment geometry based on boundary conditions.
+    :param envs: list of environments to create boundary fields for (e.g., "square", "o", "+", etc...).
+    :return: mask for shifted receptive fields in each environment based on boundary conditions and direction
+    """
     # set up square idx for each partition
     W_init = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).astype(float)
     S_init = np.rot90(W_init)
@@ -2305,7 +2419,7 @@ def generate_rf_shift_mask(envs):
                     position=0, leave=True):
         # index the partitions with deformation shape
         deformation = get_env_mat(env).astype(bool)
-        # create west bound-tether idx
+        # create west bound-tethering index
         W = deepcopy(W_init)
         W[~deformation] = np.nan
         for row in range(W.shape[0]):
@@ -2314,7 +2428,7 @@ def generate_rf_shift_mask(envs):
         W[~deformation] = np.nan
         for x, y in np.argwhere(np.diff(np.hstack((np.zeros(3)[np.newaxis].T, W)), axis=1) == 0):
             W[x, y] += 1
-        # create east bound-tether idx
+        # create east bound-tethering index
         E = deepcopy(E_init)
         E[~deformation] = np.nan
         for row in range(E.shape[0]):
@@ -2323,7 +2437,7 @@ def generate_rf_shift_mask(envs):
         E[~deformation] = np.nan
         for x, y in np.argwhere(np.diff(np.hstack((E, np.zeros(3)[np.newaxis].T)), axis=1) == 0):
             E[x, y] += 1
-        # create south bound-tether idx
+        # create south bound-tethering index
         N = deepcopy(N_init)
         N[~deformation] = np.nan
         for col in range(N.shape[1]):
@@ -2332,7 +2446,7 @@ def generate_rf_shift_mask(envs):
         N[~deformation] = np.nan
         for x, y in np.argwhere(np.diff(np.vstack((np.zeros(3)[np.newaxis], N)), axis=0) == 0):
             N[x, y] += 1
-        # create south bound-tether idx
+        # create south bound-tethering index
         S = deepcopy(S_init)
         S[~deformation] = np.nan
         for col in range(S.shape[1]):
@@ -2346,11 +2460,16 @@ def generate_rf_shift_mask(envs):
                               "S": expand_3x3_rfdim(N),
                               "E": expand_3x3_rfdim(E),
                               "W": expand_3x3_rfdim(W)}
-
     return rf_shift_mask
 
 
 def get_bound_teth_receptive_fields(receptive_fields, rf_shift_mask):
+    """
+    Generate boundary-tethered receptive fields for each environment based on boundary conditions and cardinal direction
+    :param receptive_fields: original receptive fields to shift (e.g., PCs with Solstad et al. (2006) method)
+    :param rf_shift_mask: mask for receptive field shifting in each environment
+    :return: shifted receptive fields for each environment with given population (e.g., PCs with Solstad et al. (2006))
+    """
     # use the rf_shift mask to create shifted receptive fields for each boundary
     pc_receptive_fields_shifted = {}
     for env in tqdm(list(rf_shift_mask.keys()), desc="Constructing receptive fields for environments",
@@ -2371,6 +2490,17 @@ def get_bound_teth_receptive_fields(receptive_fields, rf_shift_mask):
 
 def get_bound_teth_maps(animal, behav_dict, boundary_fields, pc_receptive_fields_shifted,
                         buffer=1e-5, filt_size=1.5):
+    """
+    Compute boundary-tethered rate maps as in Keinath et al. (2018), where cells dynamically shift following boundary
+    approach in each geometry.
+    :param animal: target animal ID as string (e.g., "QLAK-CA1-08")
+    :param behav_dict: preloaded behavioral dictionary
+    :param boundary_fields: receptive fields for each boundary along cardinal directions in each environment
+    :param pc_receptive_fields_shifted: boundary-tethered receptive fields for place cell population
+    :param buffer: buffer size to for rounding animal position to spatial bins
+    :param filt_size: filter size for rate map smoothing
+    :return: rate maps for boundary-tethered place cells
+    """
     # get number of days
     n_days = behav_dict[animal]["envs"].shape[0]
     # initialize rate map dictionary
@@ -2430,11 +2560,19 @@ def get_bound_teth_maps(animal, behav_dict, boundary_fields, pc_receptive_fields
             maps[s] = np.fliplr(temp)
         else:
             maps[s] = np.fliplr(np.array(teth_maps).transpose(2, 3, 1, 0))
-
     return clean_rate_maps(maps, behav_dict[animal]["envs"])
 
 
 def get_bt_gc2pc_maps(animals, p, n_pc=500, threshold=False, compute_rsm=False):
+    """
+    Wrapper function to compute and save boundary-tethered place cell maps with Keinath et al. (2018) method
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param n_pc: number of place cells to simulate for each animal
+    :param threshold: whether inhibitory threshold was used to compute place cell receptive fields
+    :param compute_rsm: whether to compute representational similarity matrix from rate maps
+    :return: None (rate maps and representational similarity matrix saved in p/results/riab).
+    """
     p_models = os.path.join(p, "results", "riab")
     behav_dict = joblib.load(os.path.join(p, "data", "behav_dict"))
     if threshold:
@@ -2467,10 +2605,17 @@ def get_bt_gc2pc_maps(animals, p, n_pc=500, threshold=False, compute_rsm=False):
             else:
                 joblib.dump(rsm_dict_model, os.path.join(p_models,
                                                          f'{animal}_model_bt_GC2PC_rsm_partitioned_cellwise'))
-    print("Done.")
 
 
-def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False):
+def get_bvc2pc_maps(animal, p, nPCs = 500, compute_rsm=False):
+    """
+    Model place cells from boundary vector cell basis set as in Barry et al. (2006) and Grieves et al. (2018)
+    :param animal: target animal ID as string (e.g., "QLAK-CA1-08")
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param nPCs: number of place cells to simulate for each animal
+    :param compute_rsm: whether to compute representational similarity matrix from rate maps
+    :return: None (rate maps and representational similarity matrix saved in p/results/riab).
+    """
     p_models = os.path.join(p, "results", "riab")
     p_data = os.path.join(p, "data")
     start_time = time.time()
@@ -2507,7 +2652,7 @@ def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False):
                     tmp = np.prod(m, axis=2) ** (1 / nCons)
                     # normalize and threshold BVC2PC rate map
                     tmp = tmp - np.nanmax(tmp) * placeThreshold
-                    tmp[tmp<0.] = 0.
+                    tmp[tmp < 0.] = 0.
                     # this is a scaling factor based on Grieves et al. (2018) to ensure Hz fall in usual range
                     tmp *= 500.
                     connections[k] = inds[:nCons]
@@ -2522,10 +2667,8 @@ def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False):
                 tmp[tmp < 0.] = 0.
                 tmp *= 500.
             placeMaps[:, :, k, si] = tmp
-
     out_maps = {"smoothed": placeMaps}
     joblib.dump(out_maps, os.path.join(p_models, f"{animal}_BVC2PC_maps"))
-
     if compute_rsm:
         models_maps = joblib.load(os.path.join(p_models, f"{animal}_BVC2PC_maps"))
         rsm_model, rsm_labels_model, cell_idx_model = get_cell_rsm_partitioned(models_maps)
@@ -2533,12 +2676,24 @@ def get_bvc2pc_maps(animal, p, nPCs=500, compute_rsm=False):
                           'cell_idx': cell_idx_model, 'envs': envs}
         joblib.dump(rsm_dict_model, os.path.join(p_models,
                                                  f"{animal}_model_BVC2PC_rsm_partitioned_cellwise"))
-
     print("--- %s seconds ---" % (time.time() - start_time))
 
 
 def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.)*10**(-3),
                       norm_within_day=True, threshold=0.8, timestep=1, n_pretrain=3):
+    """
+
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param basis: model basis set to use as inputs to generate sucessor features (e.g., "PC" or "BVC").
+    :param sr_gamma: temporal discount factor (0< and 1>).
+    :param sr_alpha: learning rate
+    :param norm_within_day: whether to normalize and threshold the features to max values within day
+    :param threshold: proportion of max value to threshold features
+    :param timestep: number of timesteps to step across for each update
+    :param n_pretrain: number of square sessions to pre-train before computing features with behavior on remaining data
+    :return: None (simulated sucessor features saved in p/results/riab).
+    """
     # time the process
     start_time = time.time()
     p_models = os.path.join(p, "results", "riab")
@@ -2549,7 +2704,6 @@ def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.
         basis_set = load_bases(animal, p, cell_types=[basis])
         # grab position, environments, and firing rates from basis set
         basis_fr = np.nan_to_num(basis_set[basis]["firing_rates"])
-
         # get the number of days, number of bases (input cells), and steps
         n_days, n_bases, n_steps = basis_fr.shape
         # initialize sf simulation
@@ -2561,10 +2715,8 @@ def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.
         M = np.ones([n_bases, n_bases])
         phi, n_phi = np.zeros([1, n_bases]), np.zeros([1, n_bases])
         print("Successor representation initialized")
-
         # set pre-training alpha to be the same as de Cothi paper
         pretrain_alpha = (50./30)*10**(-4)
-
         for _ in tqdm(range(n_pretrain), desc=f"Pre-training SF from {basis} inputs on first square day",
                       position=0, leave=True):
             for ti in range(n_steps - timestep):
@@ -2574,14 +2726,11 @@ def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.
                 n_phi[0, :] = basis_fr[0, :, ti+timestep][np.newaxis]
                 # update the successor feature representation with td learning rule
                 M += pretrain_alpha * (phi.T + sr_gamma * (M @ n_phi.T) - (M @ phi.T)) @ phi
-
         # now that SR is pre-trained, step through all recorded sessions and compute SR with desired gamma and alpha
         across_session_max = np.zeros([n_bases, n_days])
         for si in tqdm(range(n_days), position=0, leave=True,
                            desc=f"Computing successor features from {basis} inputs across all sessions"):
-
             srTrace = np.zeros_like(basis_fr[si])
-
             for ti in range(n_steps - timestep):
                 # phi is the bvc traces at current time step, and n_phi is the bvc traces at next time step
                 phi[0, :] = basis_fr[si, :, ti][np.newaxis]
@@ -2591,7 +2740,6 @@ def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.
                 srTrace[:, ti] = np.nansum((M * phi), axis=1)
             sf_simulation['firing_rates'][si, :, :] = srTrace
             across_session_max[:, si] = np.amax(srTrace, axis=1)
-
         # now normalize each cell's firing to max firing either within or across all sessions
         if norm_within_day:
             for si in range(n_days):
