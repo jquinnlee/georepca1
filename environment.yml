@@ -4,7 +4,6 @@ channels:
 dependencies:
   - anyio=4.6.2
   - aom=3.6.0
-  - appnope=0.1.2
   - argon2-cffi=21.3.0
   - argon2-cffi-bindings=21.2.0
   - asttokens=2.0.5
@@ -19,7 +18,6 @@ dependencies:
   - brotli=1.0.9
   - brotli-bin=1.0.9
   - brotli-python=1.0.9
-  - brunsli=0.1
   - bzip2=1.0.8
   - c-ares=1.19.1
   - ca-certificates=2024.12.31
@@ -36,12 +34,9 @@ dependencies:
   - exceptiongroup=1.2.0
   - executing=0.8.3
   - freetype=2.12.1
-  - gettext=0.21.0
   - giflib=5.2.1
   - glib=2.78.4
   - glib-tools=2.78.4
-  - gst-plugins-base=1.14.1
-  - gstreamer=1.14.1
   - h11=0.14.0
   - httpcore=1.0.2
   - httpx=0.27.0
@@ -82,18 +77,11 @@ dependencies:
   - libclang=14.0.6
   - libclang13=14.0.6
   - libcurl=8.5.0
-  - libcxx=14.0.6
   - libdeflate=1.17
-  - libedit=3.1.20230828
-  - libev=4.33
   - libffi=3.4.4
-  - libgfortran=5.0.0
-  - libgfortran5=11.3.0
   - libglib=2.78.4
   - libiconv=1.16
   - libllvm14=14.0.6
-  - libnghttp2=1.57.0
-  - libopenblas=0.3.21
   - libpng=1.6.39
   - libpq=12.20
   - libsodium=1.0.18
@@ -106,11 +94,9 @@ dependencies:
   - lz4-c=1.9.4
   - matplotlib-inline=0.1.6
   - mistune=2.0.4
-  - mysql=5.7.24
   - nbclient=0.8.0
   - nbconvert=7.16.4
   - nbformat=5.10.4
-  - ncurses=6.4
   - nest-asyncio=1.6.0
   - networkx=3.2.1
   - notebook=7.2.2
@@ -149,7 +135,6 @@ dependencies:
   - qt-main=5.15.2
   - qtconsole=5.6.0
   - qtpy=2.4.1
-  - readline=8.2
   - referencing=0.30.2
   - rfc3339-validator=0.1.4
   - rfc3986-validator=0.1.1
