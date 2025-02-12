@@ -102,7 +102,7 @@ def mat2joblib(animal, p):
     :param dat: dataset as generated with load_dat
     :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
     """
-    dat = load_dat(animal, p)
+    dat = load_dat(animal, p, format="MATLAB")
     save_dat(dat, animal, p)
 
 
