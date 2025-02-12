@@ -705,6 +705,73 @@ def get_vector_fields_animals(animals, p, stable_simulation=False, feature_type=
     return pv_vector_fields_animals, average_vector_fields.mean(0), std_vector_fields.mean(0)
 
 
+def get_pvcorr_pixelwise(animals, p, feature_type=None, shr_thresh=0.01,
+                         average_result=True):
+    """
+    Calculate pixel-wise population vector correlation between all pairs of shapes for all spatially reliable cells
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param feature_type: name of model feature if not computed from ca1 data (None if computed from ca1 data)
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :param shr_thresh: threshold for split-half reliability p-value for cells to be included
+    :param average_result: whether to average result across all cells
+    :return: population vector correlation matrix for all pairs of geometries across all animals across spatial bins
+    """
+    # First load behavioral data, which contains environment IDs, and set "cannon order" equal to first animal
+    model_p = os.path.join("results", "riab")
+    behav_dat = joblib.load(os.path.join(p, "data", "behav_dict"))
+    cannon_order = behav_dat[animals[0]]["envs"]
+    cannon_order = cannon_order[:np.unique(cannon_order).shape[0]].squeeze()
+    for a, animal in tqdm(enumerate(animals)):
+        # Now load in data from individual animal
+        temp = load_dat(animal, p)
+        # grab environment IDs for all recordings
+        envs = temp[animal]['envs'].squeeze()
+        # grab rate maps too
+        if feature_type is None:
+            maps = temp[animal]['maps']['smoothed']
+            # also load split-half reliability to select place cells only
+            shr = joblib.load(os.path.join(p, "results", f"{animal}_SHR"))
+        else:
+            maps = joblib.load(os.path.join(p, model_p, f"{animal}_{feature_type}_maps"))["smoothed"]
+        del temp
+        # measure number of bins, number of cells, number of days and unique environments
+        n_bins, n_cells, n_days, n_envs = maps.shape[0], maps.shape[2], maps.shape[3], np.unique(envs).shape[0]
+        # if using true dataset also nan out maps that are not split-half reliable
+        if feature_type is None:
+            for d in range(n_days):
+                for c in range(n_cells):
+                    if shr[c, d] >= shr_thresh:
+                        maps[:, :, c, d] = np.nan
+        # also get the days that index the start of each sequence (first square)
+        s_idx = np.where(envs == "square")[0][:-1]
+        # pv_matrix_envs will contain the cross-pv-correlation between all pairs of environments, in cannon order for
+        # each sequence
+        pv_matrix_envs = np.zeros([3, n_envs, n_envs, n_bins**2, n_bins**2]) * np.nan
+        for n, s in enumerate(s_idx):
+            # get maps and environment IDs just for target sequence
+            seq_maps = maps.T[s:s + n_envs].T # transpose maps to simplify indexing
+            seq_envs = envs[s:s + n_envs]
+            for i, envA in enumerate(cannon_order):
+                for j, envB in enumerate(cannon_order):
+                    # get index within sequence for target environments to compare
+                    a_idx, b_idx = np.where(seq_envs == envA)[0], np.where(seq_envs == envB)[0]
+                    # grab maps for respective environments, and flatten them
+                    a_maps, b_maps = (seq_maps[:, :, :, a_idx].reshape(n_bins**2, n_cells),
+                                      seq_maps[:, :, :, b_idx].reshape(n_bins**2, n_cells))
+
+                    # indices for cells that are registered in both environments
+                    cell_mask = np.where(np.logical_and(np.any(~np.isnan(a_maps), axis=0),
+                                                        np.any(~np.isnan(b_maps), axis=0)))[0]
+                    pv_matrix_envs[n, i, j, :, :] = np.corrcoef(a_maps[:, cell_mask],
+                                                                b_maps[:, cell_mask])[:n_bins ** 2, n_bins ** 2:]
+            if np.logical_and(a == 0, n == 0):
+                pv_matrix_animals = np.zeros([len(animals), s_idx.shape[0], n_envs, n_envs, n_bins**2, n_bins**2])
+            pv_matrix_animals[a] = pv_matrix_envs
+    if average_result:
+        return np.nanmean(np.nanmean(pv_matrix_animals, 1), axis=0)
+    else:
+        return pv_matrix_animals
+
 ########################################################################################################################
 # Representational similarity functions for RSM construction
 def get_cell_rsm(maps, down_sample_mask=None, unsmoothed=False, d_thresh=0):
@@ -1476,6 +1543,16 @@ def get_ca1_model_fits_sequences(rsm_parts_ordered, rsm_models, feature_types, f
 
 
 def get_ca1_model_fit_subsets(rsm_parts_animals, rsm_parts_averaged, rsm_models, feature_types, feature_names):
+    """
+    Compute CA1 model fits for specific subsets of comparisons - different environment same partition, same environment
+    different partition, and different environment different partition.
+    :param rsm_parts_animals: rsms computed from ca1 dataset for all animals and sequences
+    :param rsm_parts_averaged: average resulting rsm across animals and sequences
+    :param rsm_models: stacked rsms computed from each model
+    :param feature_types: types of features in each model (e.g., "PC", "GC2PC_th", etc...).
+    :param feature_names: names for plotting and stats with each model feature (e.g., "PC", "GC2PC", etc...).
+    :return: dataframe of CA1 model fits for each subset of comparisons
+    """
     # create boolean masks for matching and nonmatching partitions allocentrically using cannon labels
     cannon_labels = rsm_parts_animals["cannon_labels"]
     parts_mesh = np.meshgrid(cannon_labels[:, 1].astype(float), cannon_labels[:, 1].astype(float))
@@ -1516,14 +1593,14 @@ def get_ca1_model_fit_subsets(rsm_parts_animals, rsm_parts_averaged, rsm_models,
             elif m == 2:
                 comp_name = "DE-DP"
             df_hypo_comps.iloc[c] = np.hstack((feature_names[f], comp_name, fit, se, p_val))
-            c+=1
+            c += 1
     df_hypo_comps["Tau"] = df_hypo_comps["Tau"].astype(float)
     df_hypo_comps["SE"] = df_hypo_comps["SE"].astype(float)
 
     n_bootstrap = 100
     cols = ["Model", "Comparison", "Tau"]
     df_hypo_comps_verbose = pd.DataFrame(data=np.zeros([comp_masks.shape[0] * len(feature_types) * n_bootstrap, len(cols)]),
-                                 columns=cols)
+                                         columns=cols)
     c = 0
     for m, mask in enumerate(comp_masks):
         temp = deepcopy(rsm_parts_averaged)

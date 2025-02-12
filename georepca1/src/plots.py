@@ -661,6 +661,7 @@ def plot_stream_vector_fields(group_vector_fields, group_vector_fields_average):
         ax.set_xticks([])
         plt.setp(ax.spines.values(), linewidth=4., color="k")
     plt.tight_layout()
+    plt.show()
     return fig
 
 
@@ -734,6 +735,118 @@ def plot_ca1_model_fit_subsets(df_hypo_comps, feature_names):
     ax.set_xticklabels(feature_names, weight='bold', fontsize=26, rotation=90)
     ax.set_xlabel("")
     plt.setp(ax.spines.values(), color='k', linewidth=5)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_pv_matrix_pairwise(animals, pv_matrix, p):
+    """
+    Plot all pairwise correlations of population vector across spatial bins in each environment
+    :param animals: list of animal IDs as strings (e.g., ["QLAK-CA1-08", "QLAK-CA1-30", etc...]
+    :param pv_matrix: matrix of all pairwise comparisons computed with get_pvcorr_pixelwise
+    :param p: path of parent folder as string (e.g., "User/yourname/Desktop/georepca1")
+    :return: figure of all matrices for pairwise comparisons
+    """
+    behav_dict = joblib.load(os.path.join(p, "data", "behav_dict"))
+    cannon_order = behav_dict[animals[0]]["envs"][:10]
+    fig = plt.figure(figsize=(20, 20))
+    count = 1
+    for e1, env1 in enumerate(cannon_order[:]):
+        for e2, env2 in enumerate(cannon_order):
+            ax = plt.subplot(cannon_order.shape[0], cannon_order.shape[0], count)
+            count += 1
+            ax.imshow(pv_matrix[e1, e2], vmin=-0.1, vmax=1.)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            if e2 == 0:
+                ax.set_ylabel(env1)
+            if e1 == cannon_order.shape[0] - 1:
+                ax.set_xlabel(env2)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_spatial_correspondence(animals, feature_type=None, vmin=-.1, vmax=1.):
+    behav_dict = joblib.load(os.path.join(p, "data", "behav_dict"))
+    cannon_order = behav_dict[animals[0]]["envs"][:10]
+    if feature_type is None:
+        pv_matrix = joblib.load(os.path.join(p, "results", "pv_corr_pixelwise"))
+    else:
+        pv_matrix = joblib.load(os.path.join(p, "results", "riab", f"pv_corr_pixelwise_{feature_type}"))
+
+    n_bins = int(np.sqrt(pv_matrix[0, 0].shape[0]))
+    n_cols = (np.arange(1, n_bins - 1, 6).shape[0] ** 2) + 1
+    n_rows = pv_matrix.shape[1]
+
+    # for e1, env1 in tqdm(enumerate(cannon_order), position=0, leave=True, desc="Plotting spatial correspondence"):
+    #     print(env1)
+    e1 = 0
+    env1 = "square"
+    fig = plt.figure(figsize=(20, 20))
+    count = 1
+    for y in np.arange(1, n_bins - 1, 6):
+        for x in np.arange(1, n_bins - 1, 6):
+            for e2, env2 in enumerate(cannon_order):
+                ax = plt.subplot(n_cols, n_rows, count)
+                count += 1
+                transform = pv_matrix[e1, e2]
+                nan_mask1 = np.all(np.isnan(transform), axis=1).reshape(n_bins, n_bins)  # mask for env1
+                nan_mask2 = np.all(np.isnan(transform), axis=0).reshape(n_bins, n_bins)  # mask for env2
+                if ~nan_mask1[x, y]:
+                    position_map = np.zeros([n_bins, n_bins])
+                    position_map[x, y] = 1.
+                    prediction = (np.nan_to_num(position_map).ravel()[np.newaxis] @
+                                      np.nan_to_num(transform)).squeeze().reshape(n_bins, n_bins)
+                    prediction[nan_mask2] = np.nan
+                    prediction = np.nanmean(np.dstack((gaussian_filter(np.nan_to_num(prediction, 0),
+                                                                           1),
+                                                           gaussian_filter(np.nan_to_num(prediction, 1),
+                                                                           1))), -1)
+                    prediction[nan_mask2] = np.nan
+                    max_map = prediction == np.nanmax(np.nan_to_num(prediction))
+                    x_hat, y_hat = np.where(max_map)
+                    ax.scatter(x_hat, y_hat, alpha=1., zorder=1, c="red", marker="s", s=2e2, linewidth=None,
+                                    edgecolor="white")
+                    ax.imshow(prediction.T, alpha=1., zorder=0, cmap="viridis", vmax=vmax, vmin=vmin)
+                ax.set_yticks([])
+                ax.set_xticks([])
+                plt.setp(ax.spines.values(), linewidth=4., color="k")
+
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_ca1_model_correspondence(animals, pv_matrix_sequences, feature_names, feature_types, p):
+    behav_dict = joblib.load(os.path.join(p, "data", "behav_dict"))
+    cannon_order = behav_dict[animals[0]]["envs"][:10]
+    cols = ["Model", "EnvA", "EnvB", "Sequence", "Fit"]
+    model_pv_fit_df = pd.DataFrame(data=np.zeros([np.prod(pv_matrix_sequences.shape[:3]) * len(feature_types),
+                                                  len(cols)]) * np.nan, columns=cols)
+    count = 0
+    for f, feature_type in tqdm(enumerate(feature_types)):
+        pv_matrix_model = joblib.load(os.path.join(p, "results", "riab", f"pv_corr_pixelwise_{feature_type}"))
+        for s in range(pv_matrix_sequences.shape[0]):
+            for e1, env1 in enumerate(cannon_order):
+                for e2, env2 in enumerate(cannon_order):
+                    true_pv = pv_matrix_sequences[s, e1, e2]
+                    model_pv = pv_matrix_model[e1, e2]
+                    nan_mask = ~np.isnan(true_pv + model_pv)
+                    fit = kendalltau(true_pv[nan_mask], model_pv[nan_mask])[0]
+                    model_pv_fit_df.iloc[count] = np.hstack((feature_names[f], env1, env2, s, fit))
+                    count += 1
+    model_pv_fit_df.iloc[:, 3:] = model_pv_fit_df.iloc[:, 3:].astype(float)
+    fig = plt.figure(figsize=(6, 6))
+    ax = plt.subplot()
+    sns.barplot(data=model_pv_fit_df, x="Model", y="Fit", errorbar="se", palette="cool",
+                width=.5, edgecolor="k", linewidth=4., errwidth=4., errcolor="k")
+    ax.set_xticklabels(feature_names, rotation=90, weight="bold")
+    ax.set_xlabel("")
+    ax.set_ylabel("CA1 Fit ($Kendall's\ Tau$)", weight="bold")
+    ax.set_ylim([0., .55])
+    plt.setp(ax.spines.values(), linewidth=4., color="k")
     plt.tight_layout()
     plt.show()
     return fig
