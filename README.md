@@ -4,4 +4,7 @@ Code base for analyses and main figures in Lee, Keinath, Cianfarano and Brandon 
 
 Create virtual environment to run code using the environment.yml file: $ conda env create --name georepca1 --file environment.yml
 
-Dataset can be freely downloaded from Zenodo (https://doi.org/10.5281/zenodo.13993254) and manually added to the <georepca1/data> folder.
+Dataset can be freely downloaded from Zenodo (https://doi.org/10.5281/zenodo.13993254) and manually added to the "georepca1/data" folder.
+
+To run all main analyses and generate figures, you can either run main.py, or follow through Jupyter notebooks located in the "georepca1/demos" folder.
+Note that some results build across notebooks, and thus each should be run to completion before the next.
