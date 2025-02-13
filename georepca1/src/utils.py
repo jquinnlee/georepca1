@@ -93,6 +93,7 @@ def save_dat(dat, animal, p):
     :return: None
     """
     p_data = os.path.join(p, "data")
+    # save joblib file with compression
     joblib.dump(dat, os.path.join(p_data, animal), compress=3)
 
 
