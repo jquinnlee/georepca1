@@ -4,6 +4,7 @@ Code base for analyses and main figures in Lee, Keinath, Cianfarano and Brandon 
 <img width="1312" alt="Lee-Title-Neuron" src="https://github.com/user-attachments/assets/b91c2d5f-79b2-4c6d-9290-ef1978a396ec" />
 <img width="1322" alt="Lee-Figure1-Neuron" src="https://github.com/user-attachments/assets/445ff403-170c-4956-a634-02afc5eb009f" />
 
+___________________________________________________________________________________________________________________________________
 
 To run code with all dependencies installed you can create virtual environment from the environment.yml file in the command line: $ conda env create --name georepca1 --file environment.yml
 
@@ -11,6 +12,8 @@ Dataset can be freely downloaded from Zenodo (https://doi.org/10.5281/zenodo.139
 
 To run all main analyses and generate figures, you can either run main.py after defining your local path to the georepca1 folder, or follow through Jupyter notebooks located in the "georepca1/demos" folder.
 Note that some results build across notebooks, and thus each should be run to completion before moving onto the next.
+
+___________________________________________________________________________________________________________________________________
 
 The dataset (Python joblib files or MATLAB .mat files) are given names of animal IDs from the original study that can be downloaded from Zenodo contain the following fields, described below:
 
