@@ -2,11 +2,14 @@
 
 from utils import *
 from plots import *
-p = r'/Users/jquinnlee/Desktop/georepca1/georepca1'
+
+# Define path where georepca1 folder is located, including dataset manually added to the georepca1/data folder
+# e.g., r"Users/YourName/Documents/georepca1"
+p = r"" # add path to georepca1 folder here
 os.chdir(p)
 
 # Define animal names in dataset
-animals = ['QLAK-CA1-08', 'QLAK-CA1-30', 'QLAK-CA1-50', 'QLAK-CA1-51', 'QLAK-CA1-56', 'QLAK-CA1-74', 'QLAK-CA1-75']
+animals = ["QLAK-CA1-08", "QLAK-CA1-30", "QLAK-CA1-50", "QLAK-CA1-51", "QLAK-CA1-56", "QLAK-CA1-74", "QLAK-CA1-75"]
 animal = animals[2] # select example animal from list
 
 # Convert original matlab files to joblib files (large) that can be loaded efficiently in Python

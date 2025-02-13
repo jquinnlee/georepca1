@@ -93,7 +93,7 @@ def save_dat(dat, animal, p):
     :return: None
     """
     p_data = os.path.join(p, "data")
-    joblib.dump(dat, os.path.join(p_data, animal))
+    joblib.dump(dat, os.path.join(p_data, animal), compress=3)
 
 
 def mat2joblib(animal, p):
