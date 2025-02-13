@@ -35,7 +35,7 @@ plot_maps(example_maps, animal,  p, example_sfps, example_cells_idx, unsmoothed=
 # Calculate split-half spatial reliability for all recorded cells within each session
 for animal in animals:
     dat = load_dat(animal, p, format="joblib")
-    p_vals, _ = get_shr_within(dat, animal, nsims=10)
+    p_vals, _ = get_shr_within(dat, animal, nsims=1000)
     joblib.dump(p_vals, os.path.join(p, "results", f"{animal}_shr"))
 
 # fit bayesian decoder with flat priors to each day position within day (cross-validated)
@@ -212,7 +212,7 @@ for model in model_PCs:
                   unsmoothed=False, make_dir=False, cmap='viridis')
 
 # Build dictionary for model RSM with average results, and plot resulting RSM
-get_rsm_model_dict([animal], model_PCs, p_models=os.path.join(p, "results", "riab"))
+get_rsm_model_dict(animals, model_PCs, p_models=os.path.join(p, "results", "riab"))
 rsm_models = joblib.load(os.path.join(p, "results", "riab", "rsm_models"))
 for model in model_PCs:
     _ = plot_rsm_parts_averaged(rsm_models[model]["averaged"], vmin=-.1, vmax=1., cmap="inferno")
@@ -222,12 +222,12 @@ bases = ["PC", "BVC"]
 sr_gamma = 0.999
 sr_alpha = (50./30.)*10**(-3)
 for basis in bases:
-    simulate_basis2sf([animal], p, basis, sr_gamma, sr_alpha)
+    simulate_basis2sf(animals, p, basis, sr_gamma, sr_alpha)
 
 # Build rate maps and RSMs from model successor features
 for basis in bases:
     feature_type = f"{basis}2SF_{sr_gamma:.5f}gamma_{sr_alpha:.5f}alpha"
-    get_model_maps([animal], p, feature_types=[feature_type], compute_rsm=True)
+    get_model_maps(animals, p, feature_types=[feature_type], compute_rsm=True)
 
 # Plot example successor features
 for basis in bases:
@@ -242,7 +242,7 @@ for basis in bases:
 
 # Build dictionary for model RSM and plot resulting RSM
 feature_types = [f"{basis}2SF_{sr_gamma:.5f}gamma_{sr_alpha:.5f}alpha" for basis in bases]
-get_rsm_model_dict([animal], feature_types, p_models=os.path.join(p, "results", "riab"))
+get_rsm_model_dict(animals, feature_types, p_models=os.path.join(p, "results", "riab"))
 rsm_models = joblib.load(os.path.join(p, "results", "riab", "rsm_models"))
 for feature_type in feature_types:
     _ = plot_rsm_parts_averaged(rsm_models[feature_type]["averaged"], vmin=-.1, vmax=1., cmap="inferno")

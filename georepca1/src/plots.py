@@ -469,15 +469,15 @@ def plot_rsm_partitioned_similarity_resampled(df, n_samples):
     sns.set(style="dark", font_scale=2.25)
     fig = plt.figure(figsize=(6, 6))
     ax = plt.subplot()
-    sns.lineplot(data=df.groupby("N cells").mean(), x="N cells", y="R",
+    sns.lineplot(data=df.groupby("N cells").mean(), x="N cells", y="Tau",
                  color="gray", linestyle="--", linewidth=4., zorder=0)
-    sns.scatterplot(data=df.groupby("N cells").mean(), x="N cells", y="R",
-                    s=150, c=df.groupby("N cells").mean()["R"], edgecolor="k",
+    sns.scatterplot(data=df.groupby("N cells").mean(), x="N cells", y="Tau",
+                    s=150, c=df.groupby("N cells").mean()["Tau"], edgecolor="k",
                     linewidth=4., zorder=1)
     ax.set_ylim([0, 1.])
     ax.set_xticks(n_samples[::4] + [1000])
     ax.set_xticklabels(n_samples[::4] + [1000], rotation=90)
-    ax.set_ylabel("Across-animal\nsimilarity ($R$)", weight="bold")
+    ax.set_ylabel("Across-animal\nsimilarity ($Tau$)", weight="bold")
     ax.set_xlabel("Sub-sampled cells", weight="bold")
     plt.setp(ax.spines.values(), color="k", linewidth=4.)
     plt.tight_layout()
