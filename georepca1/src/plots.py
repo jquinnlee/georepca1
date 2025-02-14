@@ -768,7 +768,7 @@ def plot_pv_matrix_pairwise(animals, pv_matrix, p):
     return fig
 
 
-def plot_spatial_correspondence(animals, feature_type=None, vmin=-.1, vmax=1.):
+def plot_spatial_correspondence(animals, p, feature_type=None, vmin=-.1, vmax=1.):
     behav_dict = joblib.load(os.path.join(p, "data", "behav_dict"))
     cannon_order = behav_dict[animals[0]]["envs"][:10]
     if feature_type is None:

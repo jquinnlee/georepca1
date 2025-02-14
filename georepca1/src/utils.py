@@ -2936,7 +2936,7 @@ def simulate_basis2sf(animals, p, basis="BVC", sr_gamma=0.999, sr_alpha=(50./30.
         os.mkdir(p_models)
     for animal in animals:
         # Load basis set for animal
-        basis_set = load_bases(animal, p, cell_types=[basis])
+        basis_set = load_bases(animal, p, bases=[basis])
         # grab position, environments, and firing rates from basis set
         basis_fr = np.nan_to_num(basis_set[basis]["firing_rates"])
         # get the number of days, number of bases (input cells), and steps

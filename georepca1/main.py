@@ -184,9 +184,11 @@ bases = ["GC", "BVC", "PC"]
 for basis in bases:
     simulate_bases(animals, p, n_features, bases=[basis])
 
+get_model_maps(animals, p, feature_types=["PC"], compute_rsm=True)
+
 # build rate maps from simulated bases
 for basis in bases:
-    get_model_maps(animals, os.path.join(p), feature_types=[basis], compute_rsm=False)
+    get_model_maps(animals, p, feature_types=[basis], compute_rsm=False)
 
 # simulate place cell
 pc_rate_maps = get_solstad_pc_population(n_pcs=1000, threshold=True)
@@ -280,7 +282,8 @@ fig_4e = plot_ca1_model_fits_sequences(df_agg_bootstrap_sequences, n_seq, noise_
 # Figure 4F
 # Measure model fits for specific subsets of comparisons: same environment/different partitions; different environment
 # same partitions; different environment/different partitions
-df_hypo_comps = get_ca1_model_fit_subsets(rsm_parts_animals, rsm_parts_averaged)
+df_hypo_comps = get_ca1_model_fit_subsets(rsm_parts_animals, rsm_parts_averaged, rsm_models, feature_types,
+                                          feature_names)
 fig_4f = plot_ca1_model_fit_subsets(df_hypo_comps, feature_names)
 
 # FIGURE 5 #############################################################################################################
@@ -313,9 +316,9 @@ fig_6b = plot_pv_matrix_pairwise(animals, pv_matrix, p)
 # Figure 6D
 # Plot spatial correspondence maps showing similarity to seed location in environment A, and similarities to all
 # locations in environment B
-fig_6d1 = plot_spatial_correspondence(animals, None)
+fig_6d1 = plot_spatial_correspondence(animals, p, None)
 # Generate same plot for BVC2PC model results
-fig_6d2 = plot_spatial_correspondence(animals, "BVC2PC")
+fig_6d2 = plot_spatial_correspondence(animals, p,"BVC2PC")
 
 # Figure 6E
 # Compute 2D vectors between each spatial bin in environment A and its most similar bin (max pv correlation) in example
