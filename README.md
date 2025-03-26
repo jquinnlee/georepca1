@@ -7,10 +7,22 @@ Code base for analyses and main figures in **Lee, Keinath, Cianfarano and Brando
 ___________________________________________________________________________________________________________________________________
 # Setup and running code
 
+To clone the repository you can 1) open terminal or command prompt, 2) navigate to the desired working directory, and 3) run the following to clone the repository:
+```
+$ git clone https://github.com/jquinnlee/georepca1.git
+```
+
 To run code with all dependencies installed you can **create virtual environment from the environment.yml file** in the command line: 
 ```
 $ conda env create --name georepca1 --file environment.yml
 ```
+
+Finally, in Python add the src folder (containing all custom functions and main.py) to your path:
+```
+$ import sys
+$ sys.path.append("your_working_directory_name/georepca1/src")
+```
+
 Dataset can be freely downloaded from **Zenodo** (https://doi.org/10.5281/zenodo.13993254) and **manually added to the "georepca1/data" folder**.
 
 To run all main analyses and generate figures, you can **either run main.py** after defining your local path to the georepca1 folder, or follow through **Jupyter notebooks** located in the "georepca1/demos" folder.
