@@ -4,7 +4,7 @@ from plots import *
 
 # Define path where georepca1 folder is located, including dataset manually added to the georepca1/data folder
 # e.g., r"Users/YourName/Documents/georepca1"
-p = r"/Users/jquinnlee/Desktop/georepca1/georepca1" # add path to georepca1 folder here
+p = r"" # add path to georepca1 folder here
 os.chdir(p)
 
 # Define animal names in dataset
